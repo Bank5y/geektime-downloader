@@ -56,14 +56,36 @@ See [release page](https://github.com/nicoxiang/geektime-downloader/releases)
 > geektime-downloader.exe --gcid "gcid" --gcess "gcess" --threads 8
 ```
 
+### 图形界面 (GUI)
+
+```bash
+## 启动图形界面, 会自动在默认浏览器中打开, 也可以在页面中填写 cookie 登录
+> geektime-downloader.exe gui
+
+## 启动时直接带上 cookie 和其他下载参数
+> geektime-downloader.exe gui --gcid "gcid" --gcess "gcess" --threads 8
+```
+
+图形界面以内嵌网页的方式运行, 无需额外依赖:
+
+- **全部课程**: 与官网同步的课程目录, 支持全站搜索, 按方向 (含二级标签)、类型、形式、会员课程筛选, 默认/最热/最新排序, 分页浏览
+- **我的课程**: 已购买的课程 (含训练营), 支持关键词搜索、分类/形式/完结状态筛选、排序、分页; 也可以按课程 ID 直接打开
+- **一键下载**: 课程封面右上角的下载按钮可直接下载整套课程, 无需进入详情页
+- **课程详情**: 文章列表按章节分组, 支持搜索、分页、勾选部分文章或全部下载, 实时显示每篇文章的下载状态
+- **训练营**: 视频课下载为视频, 图文文章保存为 Markdown
+- **下载管理**: 任务队列分页显示进度、速度、剩余时间; 支持取消、重试、移除、打开所在目录, 批量重试失败/全部取消/清除已完成
+- **设置**: 下载目录、清晰度、专栏输出格式、评论、**下载线程数**、**同时下载任务数**、任务间隔等
+
+GUI 仅监听本机地址 (`127.0.0.1`, 随机端口), 所有接口均需要启动时生成的随机令牌, 请使用终端输出的地址打开。可选参数: `--addr` 指定监听地址, `--no-browser` 不自动打开浏览器。
+
 ### 多线程下载
 
-`--threads` 控制每个任务内的并行连接数, 默认 5, 范围 1-32:
+`--threads` (GUI 中为「下载线程数」) 控制每个任务内的并行连接数, 默认 5, 范围 1-32:
 
 - 视频课: m3u8 的 ts 分片并行下载, 最后按播放列表顺序合并
 - 文中嵌入的 mp4 等大文件: 服务器支持 Range 时分块并行下载, 不支持时自动回退为单连接
 
-线程数过高可能触发极客时间限流, 请酌情设置。
+GUI 中还可以设置「同时下载任务数」(1-8), 即同时下载的文章/视频数量。线程数和任务数过高可能触发极客时间限流, 请酌情设置。
 
 ### Help
 
@@ -76,6 +98,10 @@ Geektime-downloader is used to download geek time lessons
 
 Usage:
   geektime-downloader [flags]
+  geektime-downloader [command]
+
+Available Commands:
+  gui         启动图形界面 (在浏览器中打开)
 
 Flags:
       --comments int            是否下载评论(0不下载,1下载首页评论,2下载所有评论) (default 1)

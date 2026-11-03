@@ -13,20 +13,50 @@ type ProductTypeSelectOption struct {
 	IsEnterpriseMode   bool
 }
 
-func ProductTypeSelect(isEnterprise bool) (ProductTypeSelectOption, error) {
-
-	productTypeOptions := []ProductTypeSelectOption{}
-
+// ProductTypeOptions returns all selectable product types
+func ProductTypeOptions(isEnterprise bool) []ProductTypeSelectOption {
 	if isEnterprise {
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{0, "训练营", 5, []string{"c44"}, true, true}) //custom source type, not use
-	} else {
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{0, "普通课程", 1, []string{"c1", "c3"}, true, false})
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{1, "每日一课", 2, []string{"d"}, false, false})
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{2, "公开课", 1, []string{"p35", "p29", "p30"}, true, false})
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{3, "大厂案例", 4, []string{"q"}, false, false})
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{4, "训练营", 5, []string{""}, true, false}) //custom source type, not use
-		productTypeOptions = append(productTypeOptions, ProductTypeSelectOption{5, "其他", 1, []string{"x", "c6"}, true, false})
+		return []ProductTypeSelectOption{
+			{0, "训练营", 5, []string{"c44"}, true, true}, //custom source type, not use
+		}
 	}
+	return []ProductTypeSelectOption{
+		{0, "普通课程", 1, []string{"c1", "c3"}, true, false},
+		{1, "每日一课", 2, []string{"d"}, false, false},
+		{2, "公开课", 1, []string{"p35", "p29", "p30"}, true, false},
+		{3, "大厂案例", 4, []string{"q"}, false, false},
+		{4, "训练营", 5, []string{""}, true, false}, //custom source type, not use
+		{5, "其他", 1, []string{"x", "c6"}, true, false},
+	}
+}
+
+// ProductTypeOptionByCode finds the non-enterprise product type that accepts the given product type code
+func ProductTypeOptionByCode(code string) (ProductTypeSelectOption, bool) {
+	if code == "" {
+		return ProductTypeSelectOption{}, false
+	}
+	for _, o := range ProductTypeOptions(false) {
+		for _, c := range o.AcceptProductTypes {
+			if c == code {
+				return o, true
+			}
+		}
+	}
+	return ProductTypeSelectOption{}, false
+}
+
+// Accepts reports whether product type code is accepted by this option
+func (p *ProductTypeSelectOption) Accepts(code string) bool {
+	for _, c := range p.AcceptProductTypes {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
+
+func ProductTypeSelect(isEnterprise bool) (ProductTypeSelectOption, error) {
+	productTypeOptions := ProductTypeOptions(isEnterprise)
 
 	templates := &promptui.SelectTemplates{
 		Label:    "{{ . }}",

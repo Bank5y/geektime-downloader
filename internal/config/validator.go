@@ -7,6 +7,11 @@ func ValidateConfig(cfg *AppConfig) error {
 	if err := validateCookies(cfg); err != nil {
 		return err
 	}
+	return ValidateOptions(cfg)
+}
+
+// ValidateOptions validates all configuration except cookies.
+func ValidateOptions(cfg *AppConfig) error {
 	if err := validateComments(cfg); err != nil {
 		return err
 	}
@@ -27,7 +32,7 @@ func ValidateConfig(cfg *AppConfig) error {
 
 func validateCookies(cfg *AppConfig) error {
 	if cfg.Gcid == "" || cfg.Gcess == "" {
-		return fmt.Errorf("arguments 'gcid' and 'gcess' are required and cannot be empty")
+		return fmt.Errorf("arguments 'gcid' and 'gcess' are required and cannot be empty, or run 'geektime-downloader gui' to use the graphical interface")
 	}
 	return nil
 }

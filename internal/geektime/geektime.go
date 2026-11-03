@@ -46,7 +46,8 @@ type Course struct {
 // Article ...
 type Article struct {
 	AID          int
-	SectionTitle string
+	SectionTitle string // also used as download sub directory
+	Chapter      string // display only, e.g. university lesson chapter
 	Title        string
 }
 

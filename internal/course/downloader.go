@@ -114,9 +114,11 @@ func (d *CourseDownloader) DownloadArticle(course geektime.Course, productType u
 	}
 
 	if geektime.IsTextCourse(course) {
-		d.downloadingSpinner.Prefix = fmt.Sprintf("[ 正在下载 《%s》... ]", article.Title)
-		d.downloadingSpinner.Start()
-		defer d.downloadingSpinner.Stop()
+		if d.downloadingSpinner != nil {
+			d.downloadingSpinner.Prefix = fmt.Sprintf("[ 正在下载 《%s》... ]", article.Title)
+			d.downloadingSpinner.Start()
+			defer d.downloadingSpinner.Stop()
+		}
 		skip := d.skipDownloadTextArticle(article, columnDir, overwrite)
 		if skip {
 			return nil
@@ -139,6 +141,36 @@ func (d *CourseDownloader) DownloadSingleVideoProduct(title string, articleID in
 		return err
 	}
 	return video.DownloadArticleVideo(d.ctx, d.geektimeClient, articleID, sourceType, columnDir, d.cfg.Quality, d.concurrency)
+}
+
+// DownloadUniversityArticle downloads one article of a university class (训练营).
+// Video lessons are saved as video, text articles are saved as markdown.
+// Returns skipped=true when the article has neither video nor content.
+func (d *CourseDownloader) DownloadUniversityArticle(course geektime.Course, productType ui.ProductTypeSelectOption, article geektime.Article, overwrite bool) (skipped bool, err error) {
+	columnDir, err := d.mkDownloadColumnDir(course.Title)
+	if err != nil {
+		return false, err
+	}
+	progress.Stage(d.ctx, "获取文章信息")
+	detail, err := d.geektimeClient.UniversityClassArticleDetail(course.ID, article.AID)
+	if err != nil {
+		return false, err
+	}
+	if detail.Data.VideoID != "" {
+		if d.skipDownloadVideoArticle(article, columnDir, overwrite) {
+			return false, nil
+		}
+		return false, d.downloadVideoArticle(course, productType, article, columnDir)
+	}
+	if strings.TrimSpace(detail.Data.ArticleContent) == "" {
+		return true, nil
+	}
+	mdFile := filepath.Join(columnDir, filenamify.Filenamify(article.Title)+markdown.MDExtension)
+	if files.CheckFileExists(mdFile) && !overwrite {
+		return false, nil
+	}
+	progress.Stage(d.ctx, "生成 Markdown")
+	return false, markdown.Download(d.ctx, detail.Data.ArticleContent, article.Title, columnDir, article.AID)
 }
 
 func increaseDownloadedTextArticleCount(total int, downloaded *int) {
@@ -273,7 +305,7 @@ func (d *CourseDownloader) downloadVideoArticle(course geektime.Course, productT
 
 	if productType.IsUniversity() {
 		err = video.DownloadUniversityVideo(d.ctx, d.geektimeClient, article.AID, course, dir, d.cfg.Quality, d.concurrency)
-	} else if d.cfg.IsEnterprise {
+	} else if productType.IsEnterpriseMode {
 		err = video.DownloadEnterpriseArticleVideo(d.ctx, d.geektimeClient, article.AID, dir, d.cfg.Quality, d.concurrency)
 	} else {
 		err = video.DownloadArticleVideo(d.ctx, d.geektimeClient, article.AID, productType.SourceType, dir, d.cfg.Quality, d.concurrency)

@@ -58,8 +58,9 @@ func (c *Client) UniversityClassInfo(classID int) (Course, error) {
 	for _, lesson := range res.Data.Lessons {
 		for _, article := range lesson.Articles {
 			articles = append(articles, Article{
-				AID:   article.ArticleID,
-				Title: article.ArticleTitle,
+				AID:     article.ArticleID,
+				Title:   article.ArticleTitle,
+				Chapter: lesson.ChapterName,
 			})
 		}
 	}
