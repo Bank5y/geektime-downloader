@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -15,149 +16,100 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
 )
 
-// Part use this struct as a channel type.
-// The struct will have 2 fields. One for housing data and the other specifying its location within the final file.
-type Part struct {
-	Data  []byte
-	Index int
-	Offset int64
-}
+const retryAttempts = 3
 
-// DownloadFileConcurrently download file in chunks, return total file size
+// DownloadFileConcurrently downloads url into filepath and returns the number of bytes written.
+//
+// When concurrency > 1 and the server announces the file size and byte range support,
+// the file is split into `concurrency` chunks that are downloaded in parallel and written
+// directly at their offsets. Otherwise it falls back to a single streamed GET.
 func DownloadFileConcurrently(ctx context.Context, filepath string, url string, headers map[string]string, concurrency int) (int64, error) {
-	// Use HEAD with context so it can be cancelled by parent ctx (Ctrl+C)
-	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-	if err != nil {
-		return 0, err
-	}
-	// propagate headers (if any)
-	for k, v := range headers {
-		req.Header.Add(k, v)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	if resp.Body != nil {
-		_ = resp.Body.Close()
+	if concurrency <= 1 {
+		return downloadSingle(ctx, filepath, url, headers)
 	}
 
-	fileSize, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
-	if fileSize <= 0 {
-		out, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
-		if err != nil {
+	fileSize, acceptRanges, err := probe(ctx, url, headers)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
 			return 0, err
 		}
-		defer func() {
-			_ = out.Close()
-		}()
-		return fileSize, nil
+		logger.Warnf("HEAD request failed, fallback to single connection download, url: %s, err: %v", url, err)
+		return downloadSingle(ctx, filepath, url, headers)
+	}
+	if fileSize <= 0 || !acceptRanges {
+		return downloadSingle(ctx, filepath, url, headers)
 	}
 
-	if concurrency <= 0 {
-		concurrency = 1
-	}
 	if int64(concurrency) > fileSize {
 		concurrency = int(fileSize)
 	}
-
-	g, ctx := errgroup.WithContext(ctx)
-
-	results := make(chan Part, concurrency)
-
-	chunkSize := fileSize / int64(concurrency)
-
-	for i := 0; i < concurrency; i++ {
-		i := i
-		g.Go(func() error {
-			return download(ctx, concurrency, i, chunkSize, url, results)
-		})
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		err := g.Wait()
-		close(results)
-		errCh <- err
-		close(errCh)
-	}()
 
 	out, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
 	if err != nil {
 		return 0, err
 	}
-	removeOnError := false
+	removeOnError := true
 	defer func() {
 		_ = out.Close()
 		if removeOnError {
 			_ = os.Remove(filepath)
 		}
 	}()
-
-	nextIndex := 0
-	pending := make(map[int]Part, concurrency)
-	var writeErr error
-
-	for part := range results {
-		if writeErr != nil {
-			continue
-		}
-		pending[part.Index] = part
-		for {
-			nextPart, ok := pending[nextIndex]
-			if !ok {
-				break
-			}
-			_, err := out.WriteAt(nextPart.Data, nextPart.Offset)
-			if err != nil {
-				writeErr = err
-				break
-			}
-			delete(pending, nextIndex)
-			nextIndex++
-		}
-	}
-
-	if writeErr != nil {
-		removeOnError = true
-		return 0, writeErr
-	}
-
-	if err := <-errCh; err != nil {
-		removeOnError = true
+	if err := out.Truncate(fileSize); err != nil {
 		return 0, err
 	}
 
+	g, gctx := errgroup.WithContext(ctx)
+	chunkSize := fileSize / int64(concurrency)
+	for i := 0; i < concurrency; i++ {
+		start := int64(i) * chunkSize
+		end := start + chunkSize - 1
+		if i == concurrency-1 {
+			end = fileSize - 1
+		}
+		g.Go(func() error {
+			return downloadChunk(gctx, out, url, headers, start, end)
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return 0, err
+	}
+
+	removeOnError = false
 	return fileSize, nil
 }
 
-func download(ctx context.Context, workers int, index int, chunkSize int64, url string, c chan Part) error {
-	// calculate offset by multiplying
-	// index with size
-	start := int64(index) * chunkSize
-
-	// Write data range in correct format
-	// I'm reducing one from the end size to account for
-	// the next chunk starting there
-	dataRange := fmt.Sprintf("bytes=%d-%d", start, start+chunkSize-1)
-
-	// if this is downloading the last chunk
-	// rewrite the header. It's an easy way to specify
-	// getting the rest of the file
-	if index == workers-1 {
-		dataRange = fmt.Sprintf("bytes=%d-", start)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// probe sends a HEAD request and returns content length and whether byte ranges are supported.
+func probe(ctx context.Context, url string, headers map[string]string) (int64, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
+	setHeaders(req, headers)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return 0, false, fmt.Errorf("unexpected HEAD status %d", resp.StatusCode)
+	}
+	size, _ := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64)
+	acceptRanges := strings.Contains(strings.ToLower(resp.Header.Get("Accept-Ranges")), "bytes")
+	return size, acceptRanges, nil
+}
 
-	req.Header.Add("Range", dataRange)
-
+// downloadChunk downloads bytes [start, end] and writes them at offset start.
+func downloadChunk(ctx context.Context, out *os.File, url string, headers map[string]string, start, end int64) error {
 	// fix error: http2: server sent GOAWAY and closed the connection; LastStreamID=1999
 	// error comes from io read, not request
-	err = retry(ctx, 3, 700*time.Millisecond, func() error {
+	return retry(ctx, retryAttempts, 700*time.Millisecond, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		setHeaders(req, headers)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return err
@@ -165,18 +117,66 @@ func download(ctx context.Context, workers int, index int, chunkSize int64, url 
 		defer func() {
 			_ = resp.Body.Close()
 		}()
+		if resp.StatusCode != http.StatusPartialContent {
+			return fmt.Errorf("range request not honored, status %d", resp.StatusCode)
+		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return err
 		}
-		c <- Part{Index: index, Offset: start, Data: body}
+		if int64(len(body)) != end-start+1 {
+			return fmt.Errorf("short chunk read, want %d bytes, got %d", end-start+1, len(body))
+		}
+		_, err = out.WriteAt(body, start)
+		return err
+	})
+}
+
+// downloadSingle downloads url with one streamed GET request.
+func downloadSingle(ctx context.Context, filepath string, url string, headers map[string]string) (int64, error) {
+	var written int64
+	err := retry(ctx, retryAttempts, 700*time.Millisecond, func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		setHeaders(req, headers)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			return fmt.Errorf("unexpected status %d", resp.StatusCode)
+		}
+		out, err := os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o666)
+		if err != nil {
+			return err
+		}
+		n, copyErr := io.Copy(out, resp.Body)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		written = n
 		return nil
 	})
 	if err != nil {
-		return err
+		_ = os.Remove(filepath)
+		return 0, err
 	}
+	return written, nil
+}
 
-	return err
+func setHeaders(req *http.Request, headers map[string]string) {
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 }
 
 func retry(ctx context.Context, attempts int, sleep time.Duration, f func() error) (err error) {
@@ -193,9 +193,12 @@ func retry(ctx context.Context, attempts int, sleep time.Duration, f func() erro
 			logger.Infof("retry hanppen, times: %s", strconv.Itoa(i))
 		}
 		err = f()
-		if err == nil || errors.Is(err, context.Canceled) {
-			return err
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 	}
-	return fmt.Errorf("after %d attempts, last error: %s", attempts, err)
+	return fmt.Errorf("after %d attempts, last error: %w", attempts, err)
 }

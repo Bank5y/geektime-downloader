@@ -51,7 +51,19 @@ See [release page](https://github.com/nicoxiang/geektime-downloader/releases)
 
 ## cookie 方式登录
 > geektime-downloader.exe --gcid "gcid" --gcess "gcess"
+
+## 使用 8 个线程下载
+> geektime-downloader.exe --gcid "gcid" --gcess "gcess" --threads 8
 ```
+
+### 多线程下载
+
+`--threads` 控制每个任务内的并行连接数, 默认 5, 范围 1-32:
+
+- 视频课: m3u8 的 ts 分片并行下载, 最后按播放列表顺序合并
+- 文中嵌入的 mp4 等大文件: 服务器支持 Range 时分块并行下载, 不支持时自动回退为单连接
+
+线程数过高可能触发极客时间限流, 请酌情设置。
 
 ### Help
 
@@ -79,6 +91,7 @@ Flags:
       --print-pdf-wait int      Chrome生成PDF前的等待页面加载时间, 单位为秒, 默认5秒 (default 5)
   -q, --quality string          下载视频清晰度(ld标清,sd高清,hd超清) (default "sd")
       --skip-embed-video        是否跳过下载图文课程中的视频
+  -t, --threads int             下载线程数(1-32), 视频分片和文件分块并行下载 (default 5)
 ```
 
 ## Note

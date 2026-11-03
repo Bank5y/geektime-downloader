@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nicoxiang/geektime-downloader/internal/geektime"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/crypto"
@@ -21,6 +23,7 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/files"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/m3u8"
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/progress"
 	"github.com/nicoxiang/geektime-downloader/internal/video/vod"
 )
 
@@ -190,8 +193,9 @@ func downloadAliyunVodEncryptVideo(ctx context.Context,
 }
 
 // DownloadMP4 download MP4 resources in article
-func DownloadMP4(ctx context.Context, title, projectDir string, mp4URLs []string, overwrite bool) (err error) {
+func DownloadMP4(ctx context.Context, title, projectDir string, mp4URLs []string, overwrite bool, concurrency int) (err error) {
 	logger.Infof("Begin download article mp4 videos, title: %s, mp4URLs: %v", title, mp4URLs)
+	progress.Stage(ctx, "下载文中视频")
 	filenamifyTitle := filenamify.Filenamify(title)
 	videoDir := filepath.Join(projectDir, "videos", filenamifyTitle)
 	if err = os.MkdirAll(videoDir, os.ModePerm); err != nil {
@@ -210,8 +214,11 @@ func DownloadMP4(ctx context.Context, title, projectDir string, mp4URLs []string
 		headers[geektime.Origin] = geektime.DefaultBaseURL
 		headers[geektime.UserAgent] = geektime.DefaultUserAgent
 		logger.Infof("Begin download single article mp4 video, title: %s, mp4URL: %s", title, mp4URL)
-		_, err := downloader.DownloadFileConcurrently(ctx, dst, mp4URL, headers, 5)
+		_, err := downloader.DownloadFileConcurrently(ctx, dst, mp4URL, headers, concurrency)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			logger.Errorf(err, "Failed to download single article mp4 video, title: %s, mp4URL: %s", title, mp4URL)
 			return nil
 		}
@@ -242,40 +249,61 @@ func download(ctx context.Context,
 		_ = os.RemoveAll(tempVideoDir)
 	}()
 
-	bar := newBar(size, fmt.Sprintf("[正在下载 %s] ", filenamifyTitle))
-	bar.Start()
+	reporter := progress.FromContext(ctx)
+	if reporter == nil {
+		bar := newBar(size, fmt.Sprintf("[正在下载 %s] ", filenamifyTitle))
+		bar.Start()
+		defer bar.Finish()
+		reporter = &barReporter{bar: bar}
+	}
+	reporter.SetStage("下载视频")
+	reporter.SetTotal(size)
 
-	defer bar.Finish()
-
-	for _, tsFileName := range tsFileNames {
-		u := tsURLPrefix + tsFileName
-		dst := filepath.Join(tempVideoDir, tsFileName)
-
-		headers := make(map[string]string, 2)
-		headers[geektime.Origin] = geektime.DefaultBaseURL
-		headers[geektime.UserAgent] = geektime.DefaultUserAgent
-
-		fileSize, err := downloader.DownloadFileConcurrently(ctx, dst, u, headers, concurrency)
-		if err != nil {
-			return err
-		}
-
-		addBarValue(bar, fileSize)
+	if concurrency <= 0 {
+		concurrency = 1
 	}
 
+	headers := map[string]string{
+		geektime.Origin:    geektime.DefaultBaseURL,
+		geektime.UserAgent: geektime.DefaultUserAgent,
+	}
+
+	// download ts segments in parallel, each segment with a single connection
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+	for _, tsFileName := range tsFileNames {
+		if gctx.Err() != nil {
+			break
+		}
+		u := tsURLPrefix + tsFileName
+		dst := filepath.Join(tempVideoDir, tsFileName)
+		g.Go(func() error {
+			fileSize, err := downloader.DownloadFileConcurrently(gctx, dst, u, headers, 1)
+			if err != nil {
+				return err
+			}
+			reporter.Add(fileSize)
+			return nil
+		})
+	}
+	if err = g.Wait(); err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+
+	reporter.SetStage("合并视频")
 	// Read temp ts files, decrypt and merge into the one final video file
-	err = mergeTSFiles(tempVideoDir, filenamifyTitle, projectDir, decryptKey, isVodEncryptVideo)
+	err = mergeTSFiles(tempVideoDir, tsFileNames, filenamifyTitle, projectDir, decryptKey, isVodEncryptVideo)
 
 	return
 }
 
-func mergeTSFiles(tempVideoDir, filenamifyTitle, projectDir string, key []byte, isVodEncryptVideo bool) error {
-	tempTSFiles, err := os.ReadDir(tempVideoDir)
-	if err != nil {
-		return err
-	}
+// mergeTSFiles merges ts segments in playlist order into one final video file.
+func mergeTSFiles(tempVideoDir string, tsFileNames []string, filenamifyTitle, projectDir string, key []byte, isVodEncryptVideo bool) error {
 	fullPath := filepath.Join(projectDir, filenamifyTitle+TSExtension)
-	finalVideoFile, err := os.OpenFile(fullPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, os.ModePerm)
+	finalVideoFile, err := os.OpenFile(fullPath, os.O_TRUNC|os.O_WRONLY|os.O_CREATE, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -286,8 +314,8 @@ func mergeTSFiles(tempVideoDir, filenamifyTitle, projectDir string, key []byte, 
 			_ = os.Remove(fullPath)
 		}
 	}()
-	for _, tempTSFile := range tempTSFiles {
-		f, err := os.ReadFile(filepath.Join(tempVideoDir, tempTSFile.Name()))
+	for _, tsFileName := range tsFileNames {
+		f, err := os.ReadFile(filepath.Join(tempVideoDir, tsFileName))
 		if err != nil {
 			removeOnError = true
 			return err
@@ -306,23 +334,32 @@ func mergeTSFiles(tempVideoDir, filenamifyTitle, projectDir string, key []byte, 
 			}
 		}
 
-		// case HLSStandardEncrypt:
-		// 	aes128 := crypto.AESDecryptCBC(f, key, make([]byte, 16))
-		// 	// https://en.wikipedia.org/wiki/MPEG_transport_stream
-		// 	for j := 0; j < len(aes128); j++ {
-		// 	if aes128[j] == syncByte {
-		// 		aes128 = aes128[j:]
-		// 		break
-		// 	}
-		// }
-		// f = aes128
-
 		if _, err := finalVideoFile.Write(f); err != nil {
 			removeOnError = true
 			return err
 		}
 	}
 	return nil
+}
+
+// barReporter adapts a terminal progress bar to progress.Reporter
+type barReporter struct {
+	mu  sync.Mutex
+	bar *pb.ProgressBar
+}
+
+func (b *barReporter) SetStage(string) {}
+
+func (b *barReporter) SetTotal(total int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.bar.SetTotal(total)
+}
+
+func (b *barReporter) Add(n int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	addBarValue(b.bar, n)
 }
 
 func newBar(size int64, prefix string) *pb.ProgressBar {

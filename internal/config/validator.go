@@ -107,5 +107,9 @@ func validateTiming(cfg *AppConfig) error {
 		return fmt.Errorf("argument 'print-pdf-timeout' must be between 1 and 120")
 	}
 
+	if cfg.Threads < 1 || cfg.Threads > MaxThreads {
+		return fmt.Errorf("argument 'threads' must be between 1 and %d", MaxThreads)
+	}
+
 	return nil
 }

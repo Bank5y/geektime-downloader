@@ -10,6 +10,10 @@ import (
 const (
 	// GeektimeDownloaderFolder app config and download root dolder name
 	GeektimeDownloaderFolder = "geektime-downloader"
+	// DefaultThreads default download threads
+	DefaultThreads = 5
+	// MaxThreads max download threads
+	MaxThreads = 32
 )
 
 type AppConfig struct {
@@ -22,6 +26,7 @@ type AppConfig struct {
 	PrintPDFWaitSeconds    int
 	PrintPDFTimeoutSeconds int
 	Interval               int
+	Threads                int
 	IsEnterprise           bool
 	SkipEmbedVideo         bool
 	LogLevel               string

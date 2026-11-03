@@ -3,11 +3,9 @@ package course
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -22,6 +20,7 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/filenamify"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/files"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/progress"
 	"github.com/nicoxiang/geektime-downloader/internal/ui"
 	"github.com/nicoxiang/geektime-downloader/internal/video"
 )
@@ -42,7 +41,7 @@ type CourseDownloader struct {
 }
 
 func NewCourseDownloader(ctx context.Context, cfg *config.AppConfig, geektimeClient *geektime.Client, sp *spinner.Spinner) *CourseDownloader {
-	concurrency := int(math.Ceil(float64(runtime.NumCPU()) / 2.0))
+	concurrency := cfg.Threads
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -189,6 +188,7 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 	needDownloadMD := d.cfg.ColumnOutputType&outputMD != 0
 	needDownloadAudio := d.cfg.ColumnOutputType&outputAudio != 0
 
+	progress.Stage(d.ctx, "获取文章信息")
 	articleInfo, err := d.geektimeClient.V1ArticleInfo(article.AID)
 	if err != nil {
 		return err
@@ -198,7 +198,7 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 		// video exist in article content
 		hasVideo, videoURL := getVideoURLFromArticleContent(articleInfo.Data.ArticleContent)
 		if hasVideo && videoURL != "" {
-			if err := video.DownloadMP4(d.ctx, article.Title, columnDir, []string{videoURL}, overwrite); err != nil {
+			if err := video.DownloadMP4(d.ctx, article.Title, columnDir, []string{videoURL}, overwrite, d.concurrency); err != nil {
 				return err
 			}
 		}
@@ -209,13 +209,14 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 			for i, v := range articleInfo.Data.InlineVideoSubtitles {
 				videoURLs[i] = v.VideoURL
 			}
-			if err := video.DownloadMP4(d.ctx, article.Title, columnDir, videoURLs, overwrite); err != nil {
+			if err := video.DownloadMP4(d.ctx, article.Title, columnDir, videoURLs, overwrite, d.concurrency); err != nil {
 				return err
 			}
 		}
 	}
 
 	if needDownloadPDF {
+		progress.Stage(d.ctx, "生成 PDF")
 		if err := pdf.PrintArticlePageToPDF(d.ctx,
 			article,
 			columnDir,
@@ -227,6 +228,7 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 	}
 
 	if needDownloadMD {
+		progress.Stage(d.ctx, "生成 Markdown")
 		if err := markdown.Download(d.ctx,
 			articleInfo.Data.ArticleContent,
 			article.Title,
@@ -238,6 +240,7 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 	}
 
 	if needDownloadAudio {
+		progress.Stage(d.ctx, "下载音频")
 		if err := audio.DownloadAudio(d.ctx, articleInfo.Data.AudioDownloadURL, columnDir, article.Title); err != nil {
 			return err
 		}
