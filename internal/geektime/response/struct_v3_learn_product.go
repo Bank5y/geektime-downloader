@@ -41,7 +41,8 @@ type LearnProduct struct {
 		Count json.Number `json:"count"`
 	} `json:"article"`
 	Price struct {
-		Sale json.Number `json:"sale"`
+		Sale     json.Number `json:"sale"`
+		SaleType int         `json:"sale_type"`
 	} `json:"price"`
 	University struct {
 		ClassID int `json:"class_id"`

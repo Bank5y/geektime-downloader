@@ -111,6 +111,7 @@
     lock: '<svg viewBox="0 0 24 24"><rect x="5.5" y="11" width="13" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>',
     prev: '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    key: '<svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></svg>',
     pick: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
     next: '<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
   };
@@ -281,6 +282,8 @@
     let stamp;
     if (!p.openable) {
       stamp = `<span class="stamp locked" title="训练营请在「我的课程」中下载">${icons.lock}</span>`;
+    } else if (!p.purchased && p.claimable) {
+      stamp = `<button class="stamp unlock" data-action="unlock" data-id="${p.id}" title="免费领取 (解锁课程)" aria-label="免费领取《${esc(p.title)}》">${icons.key}</button>`;
     } else if (!p.purchased) {
       stamp = `<span class="stamp locked" title="尚未购买, 无法下载">${icons.lock}</span>`;
     } else {
@@ -289,7 +292,8 @@
     const unit = p.unit && !/\d/.test(p.unit) ? p.unit : '讲';
     const count = p.articleCount ? `${p.articleCount} ${esc(unit)}` : '';
     let flag = '';
-    if (!p.purchased) flag = '<span class="book-flag">未购买</span>';
+    if (!p.purchased && p.claimable) flag = '<span class="book-flag free">免费领取</span>';
+    else if (!p.purchased) flag = '<span class="book-flag">未购买</span>';
     else if (p.direct) flag = '<span class="book-flag">单个视频</span>';
     const picked = S.pick.sel.has(String(p.id));
     return `
@@ -619,7 +623,8 @@
            <button class="text-link" data-action="pick-undl">选择本页未下载</button><span class="sep"></span>
            <button class="text-link" data-action="pick-clear">清空</button>
            <button class="btn btn-sm" data-action="pick-toggle">完成</button>`
-        : `<button class="btn btn-ghost btn-sm" data-action="pick-toggle">${icons.pick}手动选择</button>
+        : `${S.page === 'explore' ? `<button class="btn btn-ghost btn-sm" data-action="batch-unlock">${icons.key}批量解锁</button>` : ''}
+           <button class="btn btn-ghost btn-sm" data-action="pick-toggle">${icons.pick}手动选择</button>
            <button class="btn btn-sm" data-action="batch-all">${icons.download}下载全部结果</button>`;
     }
     const $bar = document.getElementById('pick-bar');
@@ -663,6 +668,46 @@
     refreshPicks();
   }
 
+  // ---------- unlock (免费领取) ----------
+  // returns the unlock result status or throws
+  async function unlockRequest(p) {
+    const r = await api('POST', '/api/unlock', { productId: Number(p.id) });
+    if (r.status === 'claimed' || r.status === 'owned') {
+      p.purchased = true;
+      p.claimable = false;
+      S.products = null; // 我的课程 changed
+    } else if (r.status === 'unsupported') {
+      p.claimable = false;
+    }
+    return r;
+  }
+
+  function rerenderBook(p) {
+    document.querySelectorAll(`.book[data-id="${p.id}"]`).forEach((el) => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = bookCard(p, S.page === 'mine' ? S.lib.q : S.ex.q).trim();
+      el.replaceWith(tmp.firstElementChild);
+    });
+  }
+
+  const unlocking = new Set();
+  async function unlockOne(p) {
+    if (unlocking.has(p.id)) return;
+    unlocking.add(p.id);
+    try {
+      const r = await unlockRequest(p);
+      if (r.status === 'claimed') toast(`已领取《${p.title}》, 现在可以下载了`, 'success');
+      else if (r.status === 'owned') toast(`《${p.title}》已在你的课程中`);
+      else toast(r.message || '领取失败', 'error');
+      rerenderBook(p);
+      if (S.page === 'course') renderCourse(S.course.type, S.course.id);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      unlocking.delete(p.id);
+    }
+  }
+
   // ---------- batch drawer ----------
   // the drawer collects either all results of the current filters (across every page) or manual picks
   const COLLECT_PAGE_SIZE = 30;
@@ -694,8 +739,11 @@
     return '全部课程' + (parts.length ? ' · ' + parts.join(' · ') : ' · 全部方向');
   }
 
-  function newBatch(source, summary) {
-    return { source, summary, items: [], mode: 'skip', loading: false, loaded: 0, total: 0, err: '', running: false, stop: false, progress: '', q: '', seq: (S.batch ? S.batch.seq : 0) + 1 };
+  // whether an item can be checked in the drawer
+  const selectableIn = (b, p) => (b.kind === 'unlock' ? p.claimable && !p.purchased : pickable(p));
+
+  function newBatch(source, summary, kind) {
+    return { kind: kind || 'download', source, summary, items: [], skipped: { owned: 0, other: 0 }, then: false, mode: 'skip', loading: false, loaded: 0, total: 0, err: '', running: false, stop: false, progress: '', q: '', seq: (S.batch ? S.batch.seq : 0) + 1 };
   }
 
   function batchAdd(list) {
@@ -704,13 +752,19 @@
     for (const p of list) {
       if (seen.has(String(p.id))) continue;
       seen.add(String(p.id));
-      b.items.push({ p, on: pickable(p) && !isFullyDownloaded(p) });
+      if (b.kind === 'unlock') {
+        // only free open courses are listed when unlocking
+        if (!selectableIn(b, p)) { if (p.purchased) b.skipped.owned++; else b.skipped.other++; continue; }
+        b.items.push({ p, on: true });
+      } else {
+        b.items.push({ p, on: pickable(p) && !isFullyDownloaded(p) });
+      }
     }
   }
 
   // open the drawer with every result of the current filters
-  async function openDrawerAll() {
-    S.batch = newBatch('filter', filterSummary());
+  async function openDrawerAll(kind) {
+    S.batch = newBatch('filter', filterSummary(), kind);
     const b = S.batch;
     renderDrawer(true);
     if (S.page === 'mine') {
@@ -741,8 +795,9 @@
         const items = d.items || [];
         indexProducts(items);
         batchAdd(items);
-        b.total = Math.max(d.total || 0, b.items.length);
-        b.loaded = b.items.length;
+        b.scanned = (b.scanned || 0) + items.length;
+        b.total = Math.max(d.total || 0, b.scanned);
+        b.loaded = b.scanned;
         renderDrawer(true);
         if (!d.more || !items.length) break;
       } catch (e) {
@@ -777,7 +832,7 @@
 
   function batchSelect(kind) {
     for (const it of S.batch.items) {
-      if (!pickable(it.p)) continue;
+      if (!selectableIn(S.batch, it.p)) continue;
       if (kind === 'none') it.on = false;
       else if (kind === 'undl') it.on = !markInfo(it.p);
       else it.on = S.batch.mode === 'redo' || !isFullyDownloaded(it.p);
@@ -800,13 +855,14 @@
     const p = it.p;
     const mk = markInfo(p);
     let state;
-    if (!p.openable) state = '<span class="no">暂不支持从这里下载</span>';
+    if (S.batch.kind === 'unlock') state = p.purchased ? '<span class="ok">已领取</span>' : '免费领取';
+    else if (!p.openable) state = '<span class="no">暂不支持从这里下载</span>';
     else if (!p.purchased) state = '<span class="no">未购买</span>';
     else if (!mk) state = '未下载';
     else if (mk.cls === 'full') state = '<span class="ok">已下载</span>';
     else if (mk.cls === 'part') state = `<span class="ok">已下载 ${esc(mk.text)}</span> · 补齐缺失篇目`;
     else state = '本地已有文件 · 已存在的文件会跳过';
-    const ok = pickable(p);
+    const ok = selectableIn(S.batch, p);
     return `<label class="pick-row ${it.on ? '' : 'off'} ${ok ? '' : 'disabled'}" data-row="${i}" data-title="${esc((p.title + ' ' + (p.author || '')).toLowerCase())}">
       <input type="checkbox" data-bi="${i}" ${it.on ? 'checked' : ''} ${ok && !running ? '' : 'disabled'}>
       <span class="thumb">${coverHtml(p, p.title)}</span>
@@ -839,43 +895,58 @@
       full = true;
     }
     const items = b.items;
-    const selectable = items.filter((it) => pickable(it.p));
+    const unlock = b.kind === 'unlock';
+    const selectable = items.filter((it) => selectableIn(b, it.p));
     const full_ = selectable.filter((it) => isFullyDownloaded(it.p)).length;
     const unbought = items.length - selectable.length;
-    const chosen = items.filter((it) => it.on && pickable(it.p)).length;
+    const chosen = items.filter((it) => it.on && selectableIn(b, it.p)).length;
     const pct = b.total ? Math.min(100, (b.loaded / b.total) * 100) : 0;
 
     d.querySelector('.drawer-head').innerHTML = `
-      <div class="kicker">Batch download</div>
-      <div class="drawer-title-row"><h2 id="drawer-title">批量下载</h2>
+      <div class="kicker">${unlock ? 'Batch unlock' : 'Batch download'}</div>
+      <div class="drawer-title-row"><h2 id="drawer-title">${unlock ? '批量解锁' : '批量下载'}</h2>
         <button class="icon-btn" data-action="batch-close" aria-label="关闭" ${b.running ? 'disabled' : ''}><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
       <div class="drawer-summary">${esc(b.summary)}</div>
       ${b.loading ? `<div class="collect"><span>正在汇总${b.source === 'filter' ? '全部筛选结果' : ''} <b>${b.loaded}</b> / ${b.total || '…'}</span><button class="text-link" data-action="batch-stop-collect">停止汇总</button></div><div class="progress"><i style="width:${pct}%"></i></div>` : ''}
       ${b.err ? `<div class="error-box" style="margin:12px 0 0">汇总中断: ${esc(b.err)} — 已获取的 ${b.items.length} 门仍可下载</div>` : ''}
-      ${!b.loading && !b.err && b.source === 'filter' && b.total > b.items.length ? `<div class="collect"><span>已汇总全部可列出的 <b>${b.items.length}</b> 门课程; 官网统计数为 ${b.total}, 差额为已下架或不公开展示的课程。</span></div>` : ''}
-      <div class="drawer-stats">
+      ${!unlock && !b.loading && !b.err && b.source === 'filter' && b.total > b.items.length ? `<div class="collect"><span>已汇总全部可列出的 <b>${b.items.length}</b> 门课程; 官网统计数为 ${b.total}, 差额为已下架或不公开展示的课程。</span></div>` : ''}
+      ${unlock ? `<div class="drawer-stats">
+        <div><b>${b.loaded}</b><span>已汇总</span></div>
+        <div><b>${selectable.length}</b><span>可免费领取</span></div>
+        <div><b>${b.skipped.owned + items.length - selectable.length}</b><span>已拥有</span></div>
+        <div><b>${b.skipped.other}</b><span>不可领取</span></div>
+      </div>` : `<div class="drawer-stats">
         <div><b>${items.length}</b><span>课程</span></div>
         <div><b>${selectable.length}</b><span>可下载</span></div>
         <div><b>${full_}</b><span>已下载</span></div>
         <div><b>${unbought}</b><span>不可下载</span></div>
-      </div>`;
+      </div>`}`;
 
     if (full) {
       d.querySelector('.drawer-tools').innerHTML = `
         <div class="search-sm">${icons.search}<input class="input" id="batch-q" placeholder="在结果中查找" value="${esc(b.q)}"></div>
         <button class="text-link" data-action="batch-sel" data-v="all" ${b.running ? 'disabled' : ''}>全选</button>
-        <button class="text-link" data-action="batch-sel" data-v="undl" ${b.running ? 'disabled' : ''}>仅未下载</button>
+        ${unlock ? '' : `<button class="text-link" data-action="batch-sel" data-v="undl" ${b.running ? 'disabled' : ''}>仅未下载</button>`}
         <button class="text-link" data-action="batch-sel" data-v="none" ${b.running ? 'disabled' : ''}>全不选</button>`;
       const body = d.querySelector('.drawer-body');
       const top = body.scrollTop;
       body.innerHTML = items.length
         ? items.map((it, i) => batchRowHtml(it, i, b.running)).join('')
-        : (b.loading ? '<div class="empty" style="border:0">正在汇总…</div>' : '<div class="empty" style="border:0"><div class="title">没有课程</div></div>');
+        : (b.loading ? '<div class="empty" style="border:0">正在汇总…</div>' : `<div class="empty" style="border:0"><div class="title">${unlock ? '当前条件下没有可免费领取的课程' : '没有课程'}</div></div>`);
       body.scrollTop = top;
       filterDrawerRows();
     }
 
-    d.querySelector('.drawer-foot').innerHTML = `
+    d.querySelector('.drawer-foot').innerHTML = unlock ? `
+      <label class="check"><input type="checkbox" id="batch-then" ${b.then ? 'checked' : ''} ${b.running ? 'disabled' : ''}>领取成功后加入下载队列</label>
+      <div class="modal-note">等同于在官网课程页点击「免费领取」。只会领取官网标记为免费领取的公开课, 领取后课程会出现在「我的课程」中。</div>
+      <div class="row">
+        <span class="modal-note">${b.progress ? esc(b.progress) : `已选择 <b class="num">${chosen}</b> 门课程`}</span>
+        <div class="head-actions">
+          ${b.running ? '<button class="btn btn-ghost" data-action="batch-stop">停止</button>' : '<button class="btn btn-ghost" data-action="batch-close">取消</button>'}
+          <button class="btn btn-primary" data-action="batch-start" ${b.running || b.loading || !chosen ? 'disabled' : ''}>${icons.key}${b.running ? '正在领取…' : (b.loading ? '正在汇总…' : `解锁 ${chosen} 门课程`)}</button>
+        </div>
+      </div>` : `
       <div class="radio-group">
         <span class="lbl">已下载的课程</span>
         <label class="radio"><input type="radio" name="batch-mode" value="skip" ${b.mode === 'skip' ? 'checked' : ''} ${b.running ? 'disabled' : ''}>跳过</label>
@@ -902,9 +973,53 @@
     });
   }
 
+  async function startUnlockBatch() {
+    const b = S.batch;
+    const items = b.items.filter((it) => it.on && selectableIn(b, it.p));
+    b.running = true;
+    b.stop = false;
+    renderDrawer(true);
+    let claimed = 0;
+    let queued = 0;
+    const failed = [];
+    let aborted = '';
+    for (let i = 0; i < items.length; i++) {
+      if (b.stop) { aborted = '已停止'; break; }
+      const p = items[i].p;
+      b.progress = `正在领取 ${i + 1} / ${items.length} · ${p.title}`;
+      renderDrawer(false);
+      try {
+        const r = await unlockRequest(p);
+        if (r.status === 'claimed' || r.status === 'owned') {
+          if (r.status === 'claimed') claimed++;
+          if (b.then) {
+            try {
+              const t = await api('POST', '/api/tasks', { type: p.typeKey, courseId: Number(p.courseId), articleIds: [] });
+              queued += t.added || 0;
+            } catch (e) { failed.push(`${p.title}: 加入下载失败 ${e.message}`); }
+          }
+        } else {
+          failed.push(`${p.title}: ${r.message}`);
+        }
+      } catch (e) {
+        failed.push(`${p.title}: ${e.message}`);
+        if (e.status === 429 || e.status === 401) { aborted = e.message; break; }
+      }
+      if (i < items.length - 1) await new Promise((r) => setTimeout(r, 400));
+    }
+    b.running = false;
+    b.progress = '';
+    pollTasks();
+    toast(`已领取 ${claimed} 门课程` + (b.then ? `, 加入 ${queued} 个下载任务` : '') + (failed.length ? `; ${failed.length} 门失败` : '') + (aborted ? ` (${aborted})` : ''), failed.length || aborted ? 'error' : 'success');
+    failed.slice(0, 3).forEach((f) => toast(f, 'error'));
+    closeDrawer();
+    if (S.page === 'explore') renderExploreResults();
+  }
+
   async function startBatch() {
     const b = S.batch;
     if (!b || b.running) return;
+    if (b.kind === 'unlock') { startUnlockBatch(); return; }
     const items = b.items.filter((it) => it.on && pickable(it.p));
     b.running = true;
     b.stop = false;
@@ -1114,7 +1229,8 @@
           ${intro.subtitle ? `<div class="subtitle">${esc(intro.subtitle)}</div>` : ''}
           ${d ? courseStateHtml(d) : ''}
           ${d ? `<dl class="spec">${specs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
-          <button class="btn btn-primary" data-action="course-download-all" ${d ? '' : 'disabled'}>${icons.download}下载全部</button>
+          ${product && product.claimable && !product.purchased ? `<button class="btn btn-primary" data-action="course-unlock">${icons.key}免费领取 · 解锁课程</button>` : ''}
+          <button class="btn ${product && product.claimable && !product.purchased ? 'btn-ghost' : 'btn-primary'}" data-action="course-download-all" ${d ? '' : 'disabled'}>${icons.download}下载全部</button>
           <button class="btn btn-ghost" data-action="course-refresh">${icons.refresh}刷新目录</button>
           ${uni ? '<div class="note">训练营: 视频课保存为视频, 图文保存为 Markdown。</div>' : ''}
         </div>`;
@@ -1715,7 +1831,18 @@
       case 'pick-undl': pickPage(true); break;
       case 'pick-clear': S.pick.sel.clear(); refreshPicks(); break;
       case 'pick-open': openDrawerFromPicks(); break;
-      case 'batch-all': openDrawerAll(); break;
+      case 'batch-all': openDrawerAll('download'); break;
+      case 'batch-unlock': openDrawerAll('unlock'); break;
+      case 'unlock': {
+        const p = productIndex.get(id);
+        if (p) unlockOne(p);
+        break;
+      }
+      case 'course-unlock': {
+        const p = S.course && courseIndex.get(S.course.key);
+        if (p) unlockOne(p);
+        break;
+      }
       case 'batch-close': closeDrawer(); break;
       case 'batch-start': startBatch(); break;
       case 'batch-stop': if (S.batch) { S.batch.stop = true; S.batch.progress = '正在停止…'; renderDrawer(false); } break;
@@ -1786,6 +1913,7 @@
   document.addEventListener('change', (e) => {
     const el = e.target;
     if (el.name === 'batch-mode' && S.batch) { setBatchMode(el.value); return; }
+    if (el.id === 'batch-then' && S.batch) { S.batch.then = el.checked; return; }
     if (el.dataset && el.dataset.bi != null && S.batch) {
       S.batch.items[Number(el.dataset.bi)].on = el.checked;
       const row = el.closest('.pick-row');

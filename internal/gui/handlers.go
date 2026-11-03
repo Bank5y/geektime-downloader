@@ -104,6 +104,7 @@ type productDTO struct {
 	Openable     bool   `json:"openable"`  // can be opened/downloaded by this tool
 	Purchased    bool   `json:"purchased"` // current user can learn it
 	Local        bool   `json:"local"`     // a non-empty course folder exists in the download folder
+	Claimable    bool   `json:"claimable"` // free open course that can be unlocked ("免费领取")
 	Order        int    `json:"order"`
 }
 
@@ -130,6 +131,7 @@ func toProductDTO(p response.LearnProduct, order int) productDTO {
 		dto.ArticleCount = int(n)
 	}
 	classifyProduct(&dto, p.IsUniversity, p.University.ClassID)
+	dto.Claimable = !dto.Purchased && p.Price.SaleType == geektime.SaleTypeFreeClaim
 	return dto
 }
 
@@ -586,6 +588,17 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": dir})
+}
+
+// statusOf maps an api error to the http status writeAPIError would use
+func statusOf(err error) int {
+	switch {
+	case errors.Is(err, geektime.ErrAuthFailed):
+		return http.StatusUnauthorized
+	case errors.Is(err, geektime.ErrGeekTimeRateLimit):
+		return http.StatusTooManyRequests
+	}
+	return 0
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {

@@ -178,5 +178,7 @@ func searchProductDTO(p response.SearchProduct, order int) productDTO {
 	}
 	// search results don't carry university class ids
 	classifyProduct(&dto, false, 0)
+	// search results don't carry the sale type either, the unlock api verifies it before claiming
+	dto.Claimable = !dto.Purchased && isOpenCourseCode(dto.Code)
 	return dto
 }
