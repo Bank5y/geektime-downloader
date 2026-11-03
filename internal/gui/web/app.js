@@ -692,12 +692,16 @@
   function renderCourse(type, id) {
     const key = type + ':' + id;
     if (!S.course || S.course.key !== key) {
-      S.course = { key, type, id, data: null, err: '', loading: true, sel: new Set(), q: '', page: 1, from: lastListPage };
+      S.course = { key, type, id, data: null, err: '', loading: true, sel: new Set(), q: '', page: 1, from: lastListPage, tab: 'toc', intro: null, introErr: '' };
       loadCourse(false);
+      loadIntro(S.course);
     }
     const c = S.course;
     const backText = c.from === 'mine' ? '我的课程' : '全部课程';
     const product = courseIndex.get(key);
+    const intro = c.intro || {};
+    const coverSrc = product && product.cover ? product : (intro.cover ? { cover: intro.cover } : null);
+    const author = (product && product.author) || intro.authorName;
     const title = c.data ? c.data.title : (product ? product.title : '');
     const uni = type === 'n4' || type === 'e0';
 
@@ -710,12 +714,13 @@
         ['类型', esc(d.typeName) + (uni ? '' : (d.isVideo ? ' · 视频' : ' · 图文'))],
         ['篇目', `<span class="num">${d.articles.length}</span>`],
         ['编号', `<span class="num">${d.id}</span>`],
-        product && product.author ? ['讲师', esc(product.author)] : null,
+        author ? ['讲师', esc(author)] : null,
       ].filter(Boolean) : [];
       colophon = `
-        <div class="book-cover">${title ? coverHtml(product, title) : '<div class="skeleton" style="width:100%;height:100%"></div>'}</div>
+        <div class="book-cover">${title ? coverHtml(coverSrc, title) : '<div class="skeleton" style="width:100%;height:100%"></div>'}</div>
         <div>
           <h1>${title ? esc(title) : '<span class="skeleton" style="display:inline-block;width:80%;height:28px"></span>'}</h1>
+          ${intro.subtitle ? `<div class="subtitle">${esc(intro.subtitle)}</div>` : ''}
           ${d ? `<dl class="spec">${specs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
           <button class="btn btn-primary" data-action="course-download-all" ${d ? '' : 'disabled'}>${icons.download}下载全部</button>
           <button class="btn btn-ghost" data-action="course-refresh">${icons.refresh}刷新目录</button>
@@ -751,6 +756,33 @@
     }
   }
 
+  async function loadIntro(c) {
+    try {
+      const data = await api('GET', `/api/course/intro?type=${encodeURIComponent(c.type)}&id=${encodeURIComponent(c.id)}`);
+      if (S.course !== c) return;
+      c.intro = data;
+    } catch (e) {
+      if (S.course !== c) return;
+      c.introErr = e.message;
+      c.intro = {};
+    }
+    if (S.course === c && S.page === 'course') renderCourse(c.type, c.id);
+  }
+
+  function introHtml(c) {
+    const i = c.intro;
+    if (!i) return '<div class="prose">' + Array.from({ length: 6 }).map(() => '<div class="skeleton" style="height:14px;margin:14px 0"></div>').join('') + '</div>';
+    if (c.introErr) return `<div class="error-box" style="margin-top:20px">加载课程介绍失败: ${esc(c.introErr)}</div>`;
+    let html = '';
+    if (i.introHtml) html += `<div class="prose">${i.introHtml}</div>`;
+    if (i.authorHtml || (!i.introHtml && i.authorName)) {
+      html += `<div class="author-card"><div class="kicker">Author</div><span class="name">${esc(i.authorName || '')}</span><span class="role">${esc(i.authorIntro || '')}</span>
+        ${i.authorHtml ? `<div class="prose" style="padding-bottom:0">${i.authorHtml}</div>` : ''}</div>`;
+    }
+    if (!html) html = '<div class="empty" style="border-top:0"><div class="glyph">简</div><div class="title">暂无课程介绍</div><div>该课程在极客时间没有提供介绍内容</div></div>';
+    return html;
+  }
+
   function courseArticles() {
     const c = S.course;
     if (!c || !c.data) return [];
@@ -768,16 +800,24 @@
       return;
     }
     if (!c.data) {
-      $body.innerHTML = '<div class="toc-head"><h2>目录</h2></div>' + Array.from({ length: 10 }).map(() => '<div class="entry"><div class="skeleton" style="height:14px;flex:1"></div></div>').join('');
+      $body.innerHTML = '<div class="toc-head"><div class="toc-tabs"><span class="toc-tab active">目录</span></div></div>' + Array.from({ length: 10 }).map(() => '<div class="entry"><div class="skeleton" style="height:14px;flex:1"></div></div>').join('');
       return;
     }
     // chapter numbering over the whole course
     c.chapters = new Map();
     for (const a of c.data.articles) if (a.section && !c.chapters.has(a.section)) c.chapters.set(a.section, c.chapters.size + 1);
 
+    const tabs = `<div class="toc-tabs">
+        <button class="toc-tab ${c.tab === 'toc' ? 'active' : ''}" data-action="course-tab" data-tab="toc">目录<sup>${c.data.articles.length}</sup></button>
+        <button class="toc-tab ${c.tab === 'intro' ? 'active' : ''}" data-action="course-tab" data-tab="intro">课程介绍</button>
+      </div>`;
+    if (c.tab === 'intro') {
+      $body.innerHTML = `<div class="toc-head" id="results-top">${tabs}</div>${introHtml(c)}`;
+      return;
+    }
     $body.innerHTML = `
       <div class="toc-head" id="results-top">
-        <h2>目录</h2>
+        ${tabs}
         <label class="check"><input type="checkbox" id="sel-all"><span id="sel-all-text">全选</span></label>
         <div class="search-sm">${icons.search}<input class="input" id="course-q" placeholder="查找篇目或章节" value="${esc(c.q)}"></div>
       </div>
@@ -1239,6 +1279,7 @@
         if (p) openProduct(p);
         break;
       }
+      case 'course-tab': if (S.course) { S.course.tab = el.dataset.tab; renderCourseBody(); } break;
       case 'quick-dl': {
         const p = productIndex.get(id);
         if (p) quickDownload(p);

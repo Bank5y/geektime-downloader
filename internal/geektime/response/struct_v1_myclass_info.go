@@ -5,6 +5,7 @@ type V1MyClassInfoResponse struct {
 	Code int `json:"code"`
 	Data struct {
 		ClassType int    `json:"class_type"`
+		ClassSKU  int    `json:"class_sku"`
 		Title     string `json:"title"`
 		Lessons   []struct {
 			ChapterName string `json:"chapter_name"`

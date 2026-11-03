@@ -50,6 +50,7 @@ type Server struct {
 	cacheMu     sync.Mutex
 	products    []productDTO
 	catalogMeta *catalogMeta
+	introCache  map[string]introDTO
 	courseCache map[string]geektime.Course
 
 	tasks *TaskManager
@@ -72,6 +73,7 @@ func Run(ctx context.Context, cfg config.AppConfig, opts Options) error {
 		cfg:         cfg,
 		settings:    settingsFromConfig(cfg),
 		courseCache: make(map[string]geektime.Course),
+		introCache:  make(map[string]introDTO),
 	}
 	s.tasks = newTaskManager(ctx, s)
 
@@ -148,6 +150,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/catalog/meta", s.handleCatalogMeta)
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/course", s.handleCourse)
+	mux.HandleFunc("GET /api/course/intro", s.handleCourseIntro)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTasks)
 	mux.HandleFunc("POST /api/tasks/action", s.handleTaskAction)

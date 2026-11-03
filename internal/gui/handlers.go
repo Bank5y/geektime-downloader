@@ -240,6 +240,7 @@ func (s *Server) clearCache() {
 	defer s.cacheMu.Unlock()
 	s.products = nil
 	s.catalogMeta = nil
+	s.introCache = make(map[string]introDTO)
 	s.courseCache = make(map[string]geektime.Course)
 }
 

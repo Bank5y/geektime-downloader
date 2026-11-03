@@ -37,6 +37,7 @@ const (
 type Course struct {
 	Access   bool
 	ID       int
+	SKU      int // product id, differs from ID for university classes
 	Title    string
 	Type     string
 	IsVideo  bool

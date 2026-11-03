@@ -50,6 +50,7 @@ func (c *Client) UniversityClassInfo(classID int) (Course, error) {
 	p = Course{
 		Access:  true,
 		ID:      classID,
+		SKU:     res.Data.ClassSKU,
 		Title:   res.Data.Title,
 		Type:    "",
 		IsVideo: true,	//训练营目前默认只支持下载视频类课程

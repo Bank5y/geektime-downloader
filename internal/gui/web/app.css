@@ -516,3 +516,32 @@ code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); 
 .toast.error::before { background: var(--danger); }
 .toast.success::before { background: var(--success); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } }
+
+/* ---------- course intro ---------- */
+.colophon .subtitle { font-family: var(--serif); color: var(--text-2); font-size: 15px; margin: -6px 0 18px; line-height: 1.6; }
+.toc-tabs { display: flex; gap: 26px; flex: 1; min-width: 160px; }
+.toc-tab { border: 0; background: none; padding: 0; font-family: var(--serif); font-size: 22px; font-weight: 700; color: var(--muted); position: relative; }
+.toc-tab:hover { color: var(--text-2); }
+.toc-tab.active { color: var(--text); }
+.toc-tab.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -16px; height: 2px; background: var(--accent); }
+.toc-tab sup { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.prose { max-width: 720px; padding: 8px 0 24px; font-size: 15px; line-height: 1.9; color: var(--text); }
+.prose h1, .prose h2, .prose h3, .prose h4 { font-family: var(--serif); line-height: 1.4; margin: 36px 0 12px; }
+.prose h2 { font-size: 22px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); }
+.prose h2::before { content: "§ "; color: var(--accent); font-weight: 400; }
+.prose h3 { font-size: 18px; }
+.prose h4 { font-size: 16px; }
+.prose p { margin: 0 0 14px; }
+.prose ul, .prose ol { padding-left: 22px; margin: 0 0 16px; }
+.prose li { margin: 4px 0; }
+.prose li::marker { color: var(--accent); }
+.prose img { max-width: 100%; height: auto; display: block; margin: 18px auto; border-radius: 2px; }
+.prose a { color: var(--accent); border-bottom: 1px solid currentColor; }
+.prose blockquote { margin: 16px 0; padding: 4px 18px; border-left: 2px solid var(--accent); color: var(--text-2); }
+.prose table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+.prose th, .prose td { border: 1px solid var(--rule); padding: 6px 10px; text-align: left; }
+.prose > br { display: none; }
+.author-card { border-top: 1.5px solid var(--text); padding: 18px 0 8px; margin-top: 28px; }
+.author-card .kicker { margin-bottom: 8px; }
+.author-card .name { font-family: var(--serif); font-size: 18px; font-weight: 700; }
+.author-card .role { color: var(--muted); font-size: 13px; margin-left: 10px; }
