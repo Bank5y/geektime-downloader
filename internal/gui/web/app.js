@@ -25,7 +25,12 @@
     products: null,
     productsErr: '',
     productsLoading: false,
-    lib: Object.assign({ cat: '全部', media: 'all', status: 'all', sort: 'recent' }, store.get('lib', {}), { q: '', page: 1 }),
+    lib: Object.assign({ cat: '全部', media: 'all', status: 'all', dl: 'all', sort: 'recent' }, store.get('lib', {}), { q: '', page: 1 }),
+    // download marks: courseId -> {done, total, marked}
+    marks: {},
+    // batch selection on shelves
+    pick: { on: false, sel: new Map() },
+    batch: null,
     quick: store.get('quick', { type: 'a0', id: '' }),
     course: null, // {key, type, id, data, err, loading, sel:Set, q, page, from}
     tasks: [],
@@ -105,6 +110,8 @@
     open: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5H5V6h5"/></svg>',
     lock: '<svg viewBox="0 0 24 24"><rect x="5.5" y="11" width="13" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>',
     prev: '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>',
+    check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+    pick: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
     next: '<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
   };
 
@@ -228,6 +235,47 @@
     return plateHtml(title);
   }
 
+  // download state of a course: full / part / local / null
+  function markInfo(p) {
+    const r = S.marks[String(p.courseId)];
+    if (r && (r.marked || (r.total > 0 && r.done >= r.total))) return { cls: 'full', text: '已下载' };
+    if (r && r.done > 0) return { cls: 'part', text: r.total > 0 ? `${r.done}/${r.total}` : `已下载 ${r.done}` };
+    if (p.local) return { cls: 'local', text: '本地已有' };
+    return null;
+  }
+  const isFullyDownloaded = (p) => { const m = markInfo(p); return !!m && m.cls === 'full'; };
+  function markHtml(p) {
+    const m = markInfo(p);
+    return m ? `<span class="book-mark ${m.cls}" title="${m.cls === 'part' ? '已下载 ' + m.text + ' 篇' : m.text}">${m.cls !== 'local' ? icons.check : ''}${esc(m.text)}</span>` : '';
+  }
+  const pickable = (p) => p.openable && p.purchased;
+
+  async function loadMarks() {
+    try {
+      const r = await api('GET', '/api/marks');
+      S.marks = r.marks || {};
+      patchMarks();
+    } catch (_) { /* ignore */ }
+  }
+  const loadMarksSoon = debounce(loadMarks, 800);
+
+  function patchMarks() {
+    document.querySelectorAll('.book[data-id]').forEach((el) => {
+      const p = productIndex.get(el.dataset.id);
+      const holder = el.querySelector('.mark-slot');
+      if (!p || !holder) return;
+      const html = markHtml(p);
+      if (holder.innerHTML !== html) holder.innerHTML = html;
+    });
+    if (S.page === 'mine' && S.lib.dl !== 'all') renderLibraryResults();
+    const st = document.querySelector('.dl-state');
+    if (S.page === 'course' && st && S.course && S.course.data) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = courseStateHtml(S.course.data);
+      st.replaceWith(tmp.firstElementChild);
+    }
+  }
+
   // a course rendered as a book on the shelf
   function bookCard(p, q) {
     let stamp;
@@ -243,9 +291,10 @@
     let flag = '';
     if (!p.purchased) flag = '<span class="book-flag">未购买</span>';
     else if (p.direct) flag = '<span class="book-flag">单个视频</span>';
+    const picked = S.pick.sel.has(String(p.id));
     return `
-      <article class="book ${p.openable ? '' : 'muted'}" data-action="open-product" data-id="${p.id}" tabindex="0" role="link" aria-label="${esc(p.title)}">
-        <div class="book-cover">${coverHtml(p, p.title)}${stamp}${flag}</div>
+      <article class="book ${p.openable ? '' : 'muted'} ${picked ? 'picked' : ''} ${pickable(p) ? '' : 'unpickable'}" data-action="open-product" data-id="${p.id}" tabindex="0" role="link" aria-label="${esc(p.title)}">
+        <div class="book-cover">${coverHtml(p, p.title)}${stamp}${flag}<span class="mark-slot">${markHtml(p)}</span><span class="pick-box">${icons.check}</span></div>
         <div class="book-meta">
           <div class="book-kicker"><span>${esc(category(p))}</span>${count ? `<span class="dot"></span><span class="k-muted">${count}</span>` : ''}${p.isFinish ? '<span class="dot"></span><span class="k-muted">完结</span>' : ''}</div>
           <h3 class="book-title" title="${esc(p.subtitle || '')}">${highlight(p.title, q)}</h3>
@@ -342,6 +391,8 @@
     const prev = S.page;
     S.page = page;
     if (page === 'explore' || page === 'mine') lastListPage = page;
+    if (prev !== page && S.pick.on) { S.pick.on = false; S.pick.sel.clear(); }
+    if (prev !== page && S.batch && !S.batch.running) closeDrawer();
     switch (page) {
       case 'login': renderLogin(); break;
       case 'mine': renderLibrary(); break;
@@ -401,6 +452,7 @@
         S.products = null;
         S.meta = null;
         S.ex.data = null;
+        loadMarks();
         toast('登录成功', 'success');
         location.hash = '#/explore';
         render();
@@ -477,8 +529,9 @@
         </div>
         <div class="searchbar">${icons.search}<input id="ex-q" placeholder="搜索全站课程、讲师…" value="${esc(S.ex.q)}" aria-label="搜索课程"><span class="hint-key">按 <kbd>Enter</kbd> 搜索</span></div>
         <div id="ex-filters"></div>
-        <div class="result-bar" id="results-top"><span class="count" id="ex-count"></span><span id="ex-note"></span></div>
+        <div class="result-bar" id="results-top"><span class="count" id="ex-count"></span><span id="ex-note"></span><span class="pick-tools" id="pick-tools"></span></div>
         <div id="ex-results"></div>
+        <div class="selbar" id="pick-bar" hidden></div>
       </div>`;
     const q = document.getElementById('ex-q');
     q.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
@@ -552,8 +605,338 @@
       $res.innerHTML = '<div class="empty"><div class="glyph">无</div><div class="title">没有找到相关课程</div><div>换个关键词或调整筛选条件试试</div></div>';
       return;
     }
-    $res.innerHTML = `<div class="shelf ${ex.loading ? 'loading' : ''}">${d.items.map((p) => bookCard(p, ex.q)).join('')}</div>` +
+    renderPickUI();
+    $res.innerHTML = `<div class="shelf ${ex.loading ? 'loading' : ''} ${S.pick.on ? 'picking' : ''}">${d.items.map((p) => bookCard(p, ex.q)).join('')}</div>` +
       pager('explore', d.page, Math.max(d.total, d.more ? d.page * d.size + 1 : 0), d.size);
+  }
+
+  // ---------- batch selection ----------
+  function renderPickUI() {
+    const $t = document.getElementById('pick-tools');
+    if ($t) {
+      $t.innerHTML = S.pick.on
+        ? `<button class="text-link" data-action="pick-page">全选本页</button><span class="sep"></span>
+           <button class="text-link" data-action="pick-undl">选择本页未下载</button><span class="sep"></span>
+           <button class="text-link" data-action="pick-clear">清空</button>
+           <button class="btn btn-sm" data-action="pick-toggle">完成</button>`
+        : `<button class="btn btn-ghost btn-sm" data-action="pick-toggle">${icons.pick}手动选择</button>
+           <button class="btn btn-sm" data-action="batch-all">${icons.download}下载全部结果</button>`;
+    }
+    const $bar = document.getElementById('pick-bar');
+    if ($bar) {
+      const n = S.pick.sel.size;
+      $bar.hidden = !S.pick.on || n === 0;
+      $bar.innerHTML = `<span>已选择 <b>${n}</b> 门课程</span>
+        <div class="head-actions">
+          <button class="btn btn-sm" data-action="pick-clear">清空</button>
+          <button class="btn btn-sm btn-primary" data-action="pick-open">${icons.download}批量下载…</button>
+        </div>`;
+    }
+  }
+
+  function refreshPicks() {
+    document.querySelectorAll('.shelf').forEach((sh) => sh.classList.toggle('picking', S.pick.on));
+    document.querySelectorAll('.book[data-id]').forEach((el) => el.classList.toggle('picked', S.pick.sel.has(el.dataset.id)));
+    renderPickUI();
+  }
+
+  function setPickMode(on) {
+    S.pick.on = on;
+    if (!on) S.pick.sel.clear();
+    refreshPicks();
+  }
+
+  function togglePick(p) {
+    if (!pickable(p)) { toast(p.openable ? '尚未购买的课程无法下载' : '该课程无法从这里下载', 'error'); return; }
+    const k = String(p.id);
+    if (S.pick.sel.has(k)) S.pick.sel.delete(k); else S.pick.sel.set(k, p);
+    refreshPicks();
+  }
+
+  function pickPage(onlyUndownloaded) {
+    document.querySelectorAll('.book[data-id]').forEach((el) => {
+      const p = productIndex.get(el.dataset.id);
+      if (!p || !pickable(p)) return;
+      if (onlyUndownloaded && markInfo(p)) return;
+      S.pick.sel.set(String(p.id), p);
+    });
+    refreshPicks();
+  }
+
+  // ---------- batch drawer ----------
+  // the drawer collects either all results of the current filters (across every page) or manual picks
+  const COLLECT_PAGE_SIZE = 30;
+  const COLLECT_MAX_PAGES = 80;
+
+  function filterSummary() {
+    if (S.page === 'mine') {
+      const l = S.lib;
+      const parts = [];
+      if (l.q) parts.push(`关键词「${l.q}」`);
+      if (l.cat !== '全部') parts.push(l.cat);
+      if (l.media !== 'all') parts.push(l.media === 'video' ? '视频' : '图文 / 音频');
+      if (l.status !== 'all') parts.push(l.status === 'finish' ? '已完结' : '更新中');
+      if (l.dl !== 'all') parts.push({ done: '已下载', part: '部分下载', none: '未下载' }[l.dl]);
+      return '我的课程' + (parts.length ? ' · ' + parts.join(' · ') : ' · 全部');
+    }
+    const ex = S.ex;
+    if (ex.q) return `全部课程 · 搜索「${ex.q}」`;
+    const m = S.meta || { labels: [], types: [], forms: [], pvips: [] };
+    const parts = [];
+    const tag = m.labels.find((l) => l.id === ex.tag);
+    if (tag) {
+      parts.push(tag.name);
+      const sub = (tag.children || []).find((l) => l.id === ex.sub);
+      if (sub) parts.push(sub.name);
+    }
+    const pick = (list, v) => { const o = (list || []).find((x) => x.value === v); return o && v ? o.title : ''; };
+    [pick(m.types, ex.type), pick(m.forms, ex.form), pick(m.pvips, ex.pvip)].forEach((x) => { if (x) parts.push(x); });
+    return '全部课程' + (parts.length ? ' · ' + parts.join(' · ') : ' · 全部方向');
+  }
+
+  function newBatch(source, summary) {
+    return { source, summary, items: [], mode: 'skip', loading: false, loaded: 0, total: 0, err: '', running: false, stop: false, progress: '', q: '', seq: (S.batch ? S.batch.seq : 0) + 1 };
+  }
+
+  function batchAdd(list) {
+    const b = S.batch;
+    const seen = new Set(b.items.map((it) => String(it.p.id)));
+    for (const p of list) {
+      if (seen.has(String(p.id))) continue;
+      seen.add(String(p.id));
+      b.items.push({ p, on: pickable(p) && !isFullyDownloaded(p) });
+    }
+  }
+
+  // open the drawer with every result of the current filters
+  async function openDrawerAll() {
+    S.batch = newBatch('filter', filterSummary());
+    const b = S.batch;
+    renderDrawer(true);
+    if (S.page === 'mine') {
+      batchAdd(filteredProducts());
+      b.total = b.loaded = b.items.length;
+      renderDrawer(true);
+      return;
+    }
+    // catalog: page through the server with the same filters
+    b.loading = true;
+    renderDrawer(true);
+    const ex = S.ex;
+    for (let page = 1; page <= COLLECT_MAX_PAGES; page++) {
+      if (S.batch !== b || b.stop) break;
+      const params = new URLSearchParams({ page, size: COLLECT_PAGE_SIZE });
+      if (ex.q) params.set('q', ex.q);
+      else {
+        const tag = ex.sub || ex.tag;
+        if (tag) params.set('tag', tag);
+        if (ex.type) params.set('type', ex.type);
+        if (ex.form) params.set('form', ex.form);
+        if (ex.pvip) params.set('pvip', ex.pvip);
+        params.set('sort', ex.sort);
+      }
+      try {
+        const d = await api('GET', '/api/catalog?' + params);
+        if (S.batch !== b) return;
+        const items = d.items || [];
+        indexProducts(items);
+        batchAdd(items);
+        b.total = Math.max(d.total || 0, b.items.length);
+        b.loaded = b.items.length;
+        renderDrawer(true);
+        if (!d.more || !items.length) break;
+      } catch (e) {
+        if (S.batch !== b) return;
+        b.err = e.message;
+        break;
+      }
+    }
+    if (S.batch !== b) return;
+    b.loading = false;
+    b.stop = false;
+    renderDrawer(true);
+  }
+
+  function openDrawerFromPicks() {
+    const list = Array.from(S.pick.sel.values());
+    if (!list.length) return;
+    S.batch = newBatch('pick', `手动选择的 ${list.length} 门课程`);
+    batchAdd(list);
+    S.batch.total = S.batch.loaded = S.batch.items.length;
+    renderDrawer(true);
+  }
+
+  function setBatchMode(mode) {
+    const b = S.batch;
+    b.mode = mode;
+    for (const it of b.items) {
+      if (pickable(it.p) && isFullyDownloaded(it.p)) it.on = mode === 'redo';
+    }
+    renderDrawer(true);
+  }
+
+  function batchSelect(kind) {
+    for (const it of S.batch.items) {
+      if (!pickable(it.p)) continue;
+      if (kind === 'none') it.on = false;
+      else if (kind === 'undl') it.on = !markInfo(it.p);
+      else it.on = S.batch.mode === 'redo' || !isFullyDownloaded(it.p);
+    }
+    renderDrawer(true);
+  }
+
+  function closeDrawer() {
+    const b = S.batch;
+    if (b && b.running) return;
+    S.batch = null;
+    const d = document.getElementById('drawer');
+    if (d) {
+      d.classList.add('closing');
+      setTimeout(() => d.remove(), 180);
+    }
+  }
+
+  function batchRowHtml(it, i, running) {
+    const p = it.p;
+    const mk = markInfo(p);
+    let state;
+    if (!p.openable) state = '<span class="no">暂不支持从这里下载</span>';
+    else if (!p.purchased) state = '<span class="no">未购买</span>';
+    else if (!mk) state = '未下载';
+    else if (mk.cls === 'full') state = '<span class="ok">已下载</span>';
+    else if (mk.cls === 'part') state = `<span class="ok">已下载 ${esc(mk.text)}</span> · 补齐缺失篇目`;
+    else state = '本地已有文件 · 已存在的文件会跳过';
+    const ok = pickable(p);
+    return `<label class="pick-row ${it.on ? '' : 'off'} ${ok ? '' : 'disabled'}" data-row="${i}" data-title="${esc((p.title + ' ' + (p.author || '')).toLowerCase())}">
+      <input type="checkbox" data-bi="${i}" ${it.on ? 'checked' : ''} ${ok && !running ? '' : 'disabled'}>
+      <span class="thumb">${coverHtml(p, p.title)}</span>
+      <span class="info"><div class="t">${esc(p.title)}</div><div class="m">${esc(category(p))}${p.articleCount ? ' · ' + p.articleCount + ' 讲' : ''} · ${state}</div></span>
+    </label>`;
+  }
+
+  // full=true rebuilds the list, otherwise only counters/footer are refreshed
+  function renderDrawer(full) {
+    const b = S.batch;
+    if (!b) return;
+    let d = document.getElementById('drawer');
+    if (!d) {
+      d = document.createElement('div');
+      d.id = 'drawer';
+      d.className = 'drawer-wrap';
+      d.innerHTML = `<div class="drawer-scrim" data-action="batch-close"></div>
+        <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+          <div class="drawer-head"></div>
+          <div class="drawer-tools"></div>
+          <div class="drawer-body"></div>
+          <div class="drawer-foot"></div>
+        </aside>`;
+      document.body.appendChild(d);
+      d.querySelector('.drawer-tools').addEventListener('input', (e) => {
+        if (e.target.id !== 'batch-q') return;
+        b.q = e.target.value.trim().toLowerCase();
+        filterDrawerRows();
+      });
+      full = true;
+    }
+    const items = b.items;
+    const selectable = items.filter((it) => pickable(it.p));
+    const full_ = selectable.filter((it) => isFullyDownloaded(it.p)).length;
+    const unbought = items.length - selectable.length;
+    const chosen = items.filter((it) => it.on && pickable(it.p)).length;
+    const pct = b.total ? Math.min(100, (b.loaded / b.total) * 100) : 0;
+
+    d.querySelector('.drawer-head').innerHTML = `
+      <div class="kicker">Batch download</div>
+      <div class="drawer-title-row"><h2 id="drawer-title">批量下载</h2>
+        <button class="icon-btn" data-action="batch-close" aria-label="关闭" ${b.running ? 'disabled' : ''}><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+      <div class="drawer-summary">${esc(b.summary)}</div>
+      ${b.loading ? `<div class="collect"><span>正在汇总${b.source === 'filter' ? '全部筛选结果' : ''} <b>${b.loaded}</b> / ${b.total || '…'}</span><button class="text-link" data-action="batch-stop-collect">停止汇总</button></div><div class="progress"><i style="width:${pct}%"></i></div>` : ''}
+      ${b.err ? `<div class="error-box" style="margin:12px 0 0">汇总中断: ${esc(b.err)} — 已获取的 ${b.items.length} 门仍可下载</div>` : ''}
+      ${!b.loading && !b.err && b.source === 'filter' && b.total > b.items.length ? `<div class="collect"><span>已汇总全部可列出的 <b>${b.items.length}</b> 门课程; 官网统计数为 ${b.total}, 差额为已下架或不公开展示的课程。</span></div>` : ''}
+      <div class="drawer-stats">
+        <div><b>${items.length}</b><span>课程</span></div>
+        <div><b>${selectable.length}</b><span>可下载</span></div>
+        <div><b>${full_}</b><span>已下载</span></div>
+        <div><b>${unbought}</b><span>不可下载</span></div>
+      </div>`;
+
+    if (full) {
+      d.querySelector('.drawer-tools').innerHTML = `
+        <div class="search-sm">${icons.search}<input class="input" id="batch-q" placeholder="在结果中查找" value="${esc(b.q)}"></div>
+        <button class="text-link" data-action="batch-sel" data-v="all" ${b.running ? 'disabled' : ''}>全选</button>
+        <button class="text-link" data-action="batch-sel" data-v="undl" ${b.running ? 'disabled' : ''}>仅未下载</button>
+        <button class="text-link" data-action="batch-sel" data-v="none" ${b.running ? 'disabled' : ''}>全不选</button>`;
+      const body = d.querySelector('.drawer-body');
+      const top = body.scrollTop;
+      body.innerHTML = items.length
+        ? items.map((it, i) => batchRowHtml(it, i, b.running)).join('')
+        : (b.loading ? '<div class="empty" style="border:0">正在汇总…</div>' : '<div class="empty" style="border:0"><div class="title">没有课程</div></div>');
+      body.scrollTop = top;
+      filterDrawerRows();
+    }
+
+    d.querySelector('.drawer-foot').innerHTML = `
+      <div class="radio-group">
+        <span class="lbl">已下载的课程</span>
+        <label class="radio"><input type="radio" name="batch-mode" value="skip" ${b.mode === 'skip' ? 'checked' : ''} ${b.running ? 'disabled' : ''}>跳过</label>
+        <label class="radio"><input type="radio" name="batch-mode" value="redo" ${b.mode === 'redo' ? 'checked' : ''} ${b.running ? 'disabled' : ''}>重新下载 (覆盖已有文件)</label>
+      </div>
+      <div class="modal-note">${b.mode === 'skip' ? '跳过: 已下载的课程不加入队列; 部分下载的课程只补齐缺失的篇目。' : '重新下载: 所选课程的全部篇目都会重新下载并覆盖已有文件。'}
+        ${chosen > 30 ? ' 课程较多时添加需要一些时间, 请留意限流。' : ''}</div>
+      <div class="row">
+        <span class="modal-note">${b.progress ? esc(b.progress) : `已选择 <b class="num">${chosen}</b> 门课程`}</span>
+        <div class="head-actions">
+          ${b.running
+            ? '<button class="btn btn-ghost" data-action="batch-stop">停止添加</button>'
+            : '<button class="btn btn-ghost" data-action="batch-close">取消</button>'}
+          <button class="btn btn-primary" data-action="batch-start" ${b.running || b.loading || !chosen ? 'disabled' : ''}>${icons.download}${b.running ? '正在添加…' : (b.loading ? '正在汇总…' : `下载 ${chosen} 门课程`)}</button>
+        </div>
+      </div>`;
+  }
+
+  function filterDrawerRows() {
+    const b = S.batch;
+    if (!b) return;
+    document.querySelectorAll('#drawer .pick-row').forEach((row) => {
+      row.hidden = !!b.q && row.dataset.title.indexOf(b.q) < 0;
+    });
+  }
+
+  async function startBatch() {
+    const b = S.batch;
+    if (!b || b.running) return;
+    const items = b.items.filter((it) => it.on && pickable(it.p));
+    b.running = true;
+    b.stop = false;
+    renderDrawer(true);
+    let tasks = 0;
+    let ok = 0;
+    const failed = [];
+    let aborted = '';
+    for (let i = 0; i < items.length; i++) {
+      if (b.stop) { aborted = '已停止'; break; }
+      const p = items[i].p;
+      b.progress = `正在添加 ${i + 1} / ${items.length} · ${p.title}`;
+      renderDrawer(false);
+      try {
+        const overwrite = b.mode === 'redo' && !!markInfo(p);
+        const r = await api('POST', '/api/tasks', { type: p.typeKey, courseId: Number(p.courseId), articleIds: [], overwrite });
+        tasks += r.added || 0;
+        ok++;
+      } catch (e) {
+        failed.push(`${p.title}: ${e.message}`);
+        if (e.status === 429 || e.status === 401) { aborted = e.message; break; }
+      }
+      if (i < items.length - 1) await new Promise((r) => setTimeout(r, 250));
+    }
+    b.running = false;
+    b.progress = '';
+    pollTasks();
+    const msg = `已加入 ${ok} 门课程, 共 ${tasks} 个任务` + (failed.length ? `; ${failed.length} 门失败` : '') + (aborted ? ` (${aborted})` : '');
+    toast(msg, failed.length || aborted ? 'error' : 'success');
+    failed.slice(0, 3).forEach((f) => toast(f, 'error'));
+    if (b.source === 'pick') setPickMode(false);
+    closeDrawer();
   }
 
   // ---------- 我的课程 ----------
@@ -588,8 +971,9 @@
         </div>
         <div class="searchbar">${icons.search}<input id="lib-q" placeholder="在我的课程中查找…" value="${esc(S.lib.q)}" aria-label="搜索我的课程"></div>
         <div id="lib-filters"></div>
-        <div class="result-bar" id="results-top"><span class="count" id="lib-count"></span></div>
+        <div class="result-bar" id="results-top"><span class="count" id="lib-count"></span><span class="pick-tools" id="pick-tools"></span></div>
         <div id="lib-results"></div>
+        <div class="selbar" id="pick-bar" hidden></div>
       </div>`;
     const q = document.getElementById('lib-q');
     q.addEventListener('input', debounce(() => { S.lib.q = q.value.trim(); S.lib.page = 1; renderLibraryResults(); }, 120));
@@ -611,6 +995,7 @@
       ${facet('分类', cats, S.lib.cat, 'lib-cat')}
       ${facet('形式', [{ title: '全部', value: 'all' }, { title: '图文 / 音频', value: 'text' }, { title: '视频', value: 'video' }], S.lib.media, 'lib-media')}
       ${facet('状态', [{ title: '全部', value: 'all' }, { title: '已完结', value: 'finish' }, { title: '更新中', value: 'updating' }], S.lib.status, 'lib-status')}
+      ${facet('下载', [{ title: '全部', value: 'all' }, { title: '已下载', value: 'done' }, { title: '部分下载', value: 'part' }, { title: '未下载', value: 'none' }], S.lib.dl, 'lib-dl')}
       ${facet('排序', [{ title: '最近学习', value: 'recent' }, { title: '名称', value: 'title' }, { title: '课时最多', value: 'count' }], S.lib.sort, 'lib-sort', {
         end: '<button class="text-link facet-end" data-action="reset-filters">重置筛选</button>',
       })}
@@ -634,6 +1019,11 @@
       if (media === 'text' && p.isVideo) return false;
       if (status === 'finish' && !p.isFinish) return false;
       if (status === 'updating' && p.isFinish) return false;
+      if (S.lib.dl !== 'all') {
+        const m = markInfo(p);
+        const st = !m ? 'none' : (m.cls === 'full' ? 'done' : 'part');
+        if (st !== S.lib.dl) return false;
+      }
       if (ql) {
         const hay = (p.title + '\n' + p.subtitle + '\n' + p.author + '\n' + p.id).toLowerCase();
         if (hay.indexOf(ql) < 0) return false;
@@ -673,7 +1063,8 @@
     const size = PAGE_SIZE.mine;
     S.lib.page = clampPage(S.lib.page, list.length, size);
     const pageItems = list.slice((S.lib.page - 1) * size, S.lib.page * size);
-    $res.innerHTML = errHtml + '<div class="shelf">' + pageItems.map((p) => bookCard(p, S.lib.q)).join('') + '</div>' +
+    renderPickUI();
+    $res.innerHTML = errHtml + `<div class="shelf ${S.pick.on ? 'picking' : ''}">` + pageItems.map((p) => bookCard(p, S.lib.q)).join('') + '</div>' +
       pager('mine', S.lib.page, list.length, size);
   }
 
@@ -721,6 +1112,7 @@
         <div>
           <h1>${title ? esc(title) : '<span class="skeleton" style="display:inline-block;width:80%;height:28px"></span>'}</h1>
           ${intro.subtitle ? `<div class="subtitle">${esc(intro.subtitle)}</div>` : ''}
+          ${d ? courseStateHtml(d) : ''}
           ${d ? `<dl class="spec">${specs.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
           <button class="btn btn-primary" data-action="course-download-all" ${d ? '' : 'disabled'}>${icons.download}下载全部</button>
           <button class="btn btn-ghost" data-action="course-refresh">${icons.refresh}刷新目录</button>
@@ -767,6 +1159,35 @@
       c.intro = {};
     }
     if (S.course === c && S.page === 'course') renderCourse(c.type, c.id);
+  }
+
+  // downloaded state line in the colophon
+  function courseStateHtml(d) {
+    const r = S.marks[String(d.id)] || {};
+    const done = Math.max((d.downloaded || []).length, r.done || 0);
+    const marked = r.marked || d.marked;
+    let text;
+    if (marked) text = `${icons.check}已标记为已下载`;
+    else if (done && done >= d.articles.length) text = `${icons.check}已全部下载`;
+    else if (done) text = `已下载 ${done} / ${d.articles.length} 篇`;
+    else if (d.local) text = '下载目录中已有本课程的文件';
+    else text = '<span style="color:var(--muted)">尚未下载</span>';
+    return `<div class="dl-state">${text.replace('<svg', '<svg style="width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2.4"')}
+      <button class="text-link" data-action="mark-toggle">${marked ? '取消标记' : '标记为已下载'}</button></div>`;
+  }
+
+  async function toggleCourseMark() {
+    const c = S.course;
+    if (!c || !c.data) return;
+    const r = S.marks[String(c.data.id)] || {};
+    const marked = !(r.marked || c.data.marked);
+    try {
+      const res = await api('POST', '/api/marks', { courseId: c.data.id, title: c.data.title, marked });
+      S.marks = res.marks || {};
+      c.data.marked = marked;
+      renderCourse(c.type, c.id);
+      toast(marked ? '已标记为已下载' : '已取消标记', 'success');
+    } catch (e) { toast(e.message, 'error'); }
   }
 
   function introHtml(c) {
@@ -855,6 +1276,7 @@
     c.page = clampPage(c.page, all.length, size);
     const list = all.slice((c.page - 1) * size, c.page * size);
     const idx = taskIndex();
+    c.done = new Set(c.data.downloaded || []);
     if (!list.length) {
       $list.innerHTML = '<div class="empty" style="border-top:0"><div class="title">没有匹配的篇目</div></div>';
     } else {
@@ -873,7 +1295,7 @@
             <span class="e-title" title="${esc(a.title)}">${highlight(a.title, c.q)}</span>
             <span class="e-lead"></span>
             <span class="e-act">
-              <span data-st="${a.id}">${statusHtml(t)}</span>
+              <span data-st="${a.id}">${statusHtml(t) || (c.done.has(a.id) ? '<span class="st done">已下载</span>' : '')}</span>
               <button class="ibtn accent" title="下载此篇" data-action="course-download-one" data-aid="${a.id}">${icons.download}</button>
             </span>
           </div>`;
@@ -903,7 +1325,7 @@
     if (!c || !c.data) return;
     const idx = taskIndex();
     document.querySelectorAll('[data-st]').forEach((el) => {
-      const html = statusHtml(idx.get(c.type + ':' + c.data.id + ':' + el.dataset.st));
+      const html = statusHtml(idx.get(c.type + ':' + c.data.id + ':' + el.dataset.st)) || (c.done && c.done.has(Number(el.dataset.st)) ? '<span class="st done">已下载</span>' : '');
       if (el.innerHTML !== html) el.innerHTML = html;
     });
   }
@@ -1193,8 +1615,14 @@
   }
 
   // ---------- polling ----------
+  let lastFinished = -1;
   function applyTasks(tasks) {
     S.tasks = tasks;
+    const finished = tasks.filter((t) => t.status === 'done' || t.status === 'skipped').length;
+    if (finished !== lastFinished) {
+      if (lastFinished >= 0) loadMarksSoon();
+      lastFinished = finished;
+    }
     const sig = JSON.stringify(tasks.map((t) => [t.id, t.status, t.done, t.total, t.stage, t.speed, t.error]));
     const changed = sig !== S.tasksSig;
     S.tasksSig = sig;
@@ -1265,8 +1693,9 @@
       case 'lib-media': setLib('media', el.dataset.v); break;
       case 'lib-status': setLib('status', el.dataset.v); break;
       case 'lib-sort': setLib('sort', el.dataset.v); break;
+      case 'lib-dl': setLib('dl', el.dataset.v); break;
       case 'reset-filters': {
-        Object.assign(S.lib, { q: '', cat: '全部', media: 'all', status: 'all', sort: 'recent', page: 1 });
+        Object.assign(S.lib, { q: '', cat: '全部', media: 'all', status: 'all', dl: 'all', sort: 'recent', page: 1 });
         saveLib();
         const q = document.getElementById('lib-q');
         if (q) q.value = '';
@@ -1276,9 +1705,23 @@
       case 'quick-open': quickOpen(); break;
       case 'open-product': {
         const p = productIndex.get(id);
-        if (p) openProduct(p);
+        if (!p) break;
+        if (S.pick.on) togglePick(p);
+        else openProduct(p);
         break;
       }
+      case 'pick-toggle': setPickMode(!S.pick.on); break;
+      case 'pick-page': pickPage(false); break;
+      case 'pick-undl': pickPage(true); break;
+      case 'pick-clear': S.pick.sel.clear(); refreshPicks(); break;
+      case 'pick-open': openDrawerFromPicks(); break;
+      case 'batch-all': openDrawerAll(); break;
+      case 'batch-close': closeDrawer(); break;
+      case 'batch-start': startBatch(); break;
+      case 'batch-stop': if (S.batch) { S.batch.stop = true; S.batch.progress = '正在停止…'; renderDrawer(false); } break;
+      case 'batch-stop-collect': if (S.batch) S.batch.stop = true; break;
+      case 'batch-sel': if (S.batch && !S.batch.running) batchSelect(el.dataset.v); break;
+      case 'mark-toggle': toggleCourseMark(); break;
       case 'course-tab': if (S.course) { S.course.tab = el.dataset.tab; renderCourseBody(); } break;
       case 'quick-dl': {
         const p = productIndex.get(id);
@@ -1326,6 +1769,7 @@
 
   document.addEventListener('keydown', (e) => {
     const t = e.target;
+    if (e.key === 'Escape' && S.batch && !S.batch.running) { closeDrawer(); return; }
     if (e.key === 'Enter' && t.classList && t.classList.contains('book')) t.click();
     if (e.key === 'Enter' && t.dataset && t.dataset.jump) {
       const n = Number(t.value);
@@ -1341,6 +1785,14 @@
 
   document.addEventListener('change', (e) => {
     const el = e.target;
+    if (el.name === 'batch-mode' && S.batch) { setBatchMode(el.value); return; }
+    if (el.dataset && el.dataset.bi != null && S.batch) {
+      S.batch.items[Number(el.dataset.bi)].on = el.checked;
+      const row = el.closest('.pick-row');
+      if (row) row.classList.toggle('off', !el.checked);
+      renderDrawer(false);
+      return;
+    }
     if (el.dataset && el.dataset.sel && S.course) {
       const aid = Number(el.dataset.sel);
       if (el.checked) S.course.sel.add(aid); else S.course.sel.delete(aid);
@@ -1349,8 +1801,8 @@
   });
 
   function saveLib() {
-    const { cat, media, status, sort } = S.lib;
-    store.set('lib', { cat, media, status, sort });
+    const { cat, media, status, dl, sort } = S.lib;
+    store.set('lib', { cat, media, status, dl, sort });
   }
 
   $logout.addEventListener('click', async () => {
@@ -1404,6 +1856,7 @@
     }
     render();
     pollTasks();
+    if (S.loggedIn) loadMarks();
   }
 
   boot();

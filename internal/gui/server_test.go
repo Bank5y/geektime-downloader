@@ -33,6 +33,7 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 		settings:     settingsFromConfig(cfg),
 		courseCache:  make(map[string]geektime.Course),
 		introCache:   make(map[string]introDTO),
+		records:      newRecordStore(""),
 		checkHost:    true,
 		allowedHosts: map[string]bool{"127.0.0.1:1234": true},
 	}

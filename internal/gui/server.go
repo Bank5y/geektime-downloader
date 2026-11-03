@@ -53,7 +53,8 @@ type Server struct {
 	introCache  map[string]introDTO
 	courseCache map[string]geektime.Course
 
-	tasks *TaskManager
+	tasks   *TaskManager
+	records *recordStore
 
 	port         string
 	checkHost    bool
@@ -74,6 +75,7 @@ func Run(ctx context.Context, cfg config.AppConfig, opts Options) error {
 		settings:    settingsFromConfig(cfg),
 		courseCache: make(map[string]geektime.Course),
 		introCache:  make(map[string]introDTO),
+		records:     newRecordStore(defaultRecordPath()),
 	}
 	s.tasks = newTaskManager(ctx, s)
 
@@ -151,6 +153,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/catalog", s.handleCatalog)
 	mux.HandleFunc("GET /api/course", s.handleCourse)
 	mux.HandleFunc("GET /api/course/intro", s.handleCourseIntro)
+	mux.HandleFunc("GET /api/marks", s.handleMarks)
+	mux.HandleFunc("POST /api/marks", s.handleSetMark)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTasks)
 	mux.HandleFunc("POST /api/tasks/action", s.handleTaskAction)

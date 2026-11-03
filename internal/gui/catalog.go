@@ -133,6 +133,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 			seen[it.Product.ID] = true
 			out.Items = append(out.Items, searchProductDTO(it.Product, (page-1)*size+i))
 		}
+		out.Items = s.withLocal(out.Items)
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
@@ -154,6 +155,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	for i, p := range res.Products {
 		out.Items = append(out.Items, toProductDTO(p, (page-1)*size+i))
 	}
+	out.Items = s.withLocal(out.Items)
 	writeJSON(w, http.StatusOK, out)
 }
 

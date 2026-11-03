@@ -103,6 +103,7 @@ type productDTO struct {
 	Direct       bool   `json:"direct"`    // no article selection, download as one video
 	Openable     bool   `json:"openable"`  // can be opened/downloaded by this tool
 	Purchased    bool   `json:"purchased"` // current user can learn it
+	Local        bool   `json:"local"`     // a non-empty course folder exists in the download folder
 	Order        int    `json:"order"`
 }
 
@@ -171,12 +172,15 @@ func articleSection(a geektime.Article) string {
 }
 
 type courseDTO struct {
-	ID       int          `json:"id"`
-	Title    string       `json:"title"`
-	IsVideo  bool         `json:"isVideo"`
-	TypeKey  string       `json:"typeKey"`
-	TypeName string       `json:"typeName"`
-	Articles []articleDTO `json:"articles"`
+	ID         int          `json:"id"`
+	Title      string       `json:"title"`
+	IsVideo    bool         `json:"isVideo"`
+	TypeKey    string       `json:"typeKey"`
+	TypeName   string       `json:"typeName"`
+	Articles   []articleDTO `json:"articles"`
+	Downloaded []int        `json:"downloaded"` // article ids recorded as downloaded
+	Marked     bool         `json:"marked"`     // manually marked as downloaded
+	Local      bool         `json:"local"`
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +267,7 @@ func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
 	cached := s.products
 	s.cacheMu.Unlock()
 	if cached != nil && !refresh {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"products": cached})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"products": s.withLocal(cached)})
 		return
 	}
 
@@ -281,7 +285,7 @@ func (s *Server) handleProducts(w http.ResponseWriter, r *http.Request) {
 	s.cacheMu.Lock()
 	s.products = products
 	s.cacheMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]interface{}{"products": products})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"products": s.withLocal(products)})
 }
 
 func (s *Server) handleCourse(w http.ResponseWriter, r *http.Request) {
@@ -332,6 +336,9 @@ func (s *Server) handleCourse(w http.ResponseWriter, r *http.Request) {
 	for _, a := range c.Articles {
 		dto.Articles = append(dto.Articles, articleDTO{a.AID, a.Title, articleSection(a)})
 	}
+	s.records.setTotal(c.ID, c.Title, len(c.Articles), false)
+	dto.Downloaded, dto.Marked = s.records.articles(c.ID)
+	dto.Local = s.localExists(c.Title)
 	writeJSON(w, http.StatusOK, dto)
 }
 
@@ -402,6 +409,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 		Type       string `json:"type"`
 		CourseID   int    `json:"courseId"`
 		ArticleIDs []int  `json:"articleIds"`
+		Overwrite  bool   `json:"overwrite"`
 	}
 	if err := readJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -418,7 +426,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !option.NeedSelectArticle {
-		s.createProductTask(w, client, option, req.Type, req.CourseID)
+		s.createProductTask(w, client, option, req.Type, req.CourseID, req.Overwrite)
 		return
 	}
 
@@ -453,8 +461,10 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 			course:      c,
 			option:      option,
 			article:     a,
+			overwrite:   req.Overwrite,
 		})
 	}
+	s.records.setTotal(c.ID, c.Title, len(c.Articles), true)
 	if len(tasks) == 0 {
 		writeError(w, http.StatusBadRequest, "没有可下载的文章")
 		return
@@ -464,7 +474,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // createProductTask handles 每日一课 / 大厂案例: the id is a product id and it contains one video
-func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Client, option ui.ProductTypeSelectOption, typeKey string, id int) {
+func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Client, option ui.ProductTypeSelectOption, typeKey string, id int, overwrite bool) {
 	info, err := client.ProductInfo(id)
 	if err != nil {
 		writeAPIError(w, err)
@@ -489,7 +499,9 @@ func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Clien
 		IsVideo:     true,
 		kind:        kindProduct,
 		option:      option,
+		overwrite:   overwrite,
 	}})
+	s.records.setTotal(id, title, 1, true)
 	writeJSON(w, http.StatusOK, map[string]int{"added": added, "requested": 1})
 }
 

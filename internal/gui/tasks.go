@@ -69,6 +69,7 @@ type Task struct {
 	dir        string
 	cancel     context.CancelFunc
 	removed    bool
+	overwrite  bool // re-download even if files exist
 	lastBytes  int64
 	lastTick   time.Time
 	lastUpdate time.Time
@@ -118,6 +119,7 @@ func (m *TaskManager) add(tasks []*Task) int {
 			// re-queue the finished one instead of creating a duplicate entry
 			existing.reset()
 			existing.removed = false
+			existing.overwrite = t.overwrite
 			added++
 			continue
 		}
@@ -314,6 +316,11 @@ func (m *TaskManager) run(ctx context.Context, t *Task) {
 		m.waitInterval(ctx)
 	}
 
+	if err == nil {
+		// remember what has been downloaded, also for skipped (nothing to download) articles
+		m.srv.records.addArticle(t.CourseID, t.CourseTitle, t.ArticleID)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t.cancel = nil
@@ -349,6 +356,7 @@ func (m *TaskManager) execute(ctx context.Context, t *Task) (skipped bool, err e
 		return false, errors.New("未登录")
 	}
 	cfg, st := m.srv.snapshotConfig()
+	overwrite := st.Overwrite || t.overwrite
 
 	m.mu.Lock()
 	t.dir = filepath.Join(cfg.DownloadFolder, filenamify.Filenamify(t.CourseTitle))
@@ -367,7 +375,7 @@ func (m *TaskManager) execute(ctx context.Context, t *Task) (skipped bool, err e
 
 	// 训练营: 视频课下载视频, 图文文章保存为 Markdown
 	if t.option.IsUniversity() {
-		skipped, err := d.DownloadUniversityArticle(t.course, t.option, t.article, st.Overwrite)
+		skipped, err := d.DownloadUniversityArticle(t.course, t.option, t.article, overwrite)
 		if skipped {
 			m.mu.Lock()
 			t.Stage = "文章无可下载内容, 已跳过"
@@ -376,7 +384,7 @@ func (m *TaskManager) execute(ctx context.Context, t *Task) (skipped bool, err e
 		return skipped, err
 	}
 
-	return false, d.DownloadArticle(t.course, t.option, t.article, st.Overwrite)
+	return false, d.DownloadArticle(t.course, t.option, t.article, overwrite)
 }
 
 func (m *TaskManager) waitInterval(ctx context.Context) {
