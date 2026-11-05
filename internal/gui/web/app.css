@@ -487,9 +487,26 @@ code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); 
 @keyframes slide { 0% { left: -25%; } 100% { left: 100%; } }
 .task-nums { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
 .task-actions { display: flex; gap: 2px; min-width: 104px; justify-content: flex-end; }
+/* tasks folded by course */
+.tgroup { border-bottom: 1px solid var(--border); }
+.tgroup-head { border-bottom: 0; cursor: pointer; user-select: none; }
+.tgroup-head .task-actions { min-width: 136px; }
+.tgroup-head:hover .t { color: var(--accent); }
+.tgroup-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tgroup-chev svg { transition: transform .15s ease; }
+.tgroup.open .tgroup-chev svg { transform: rotate(90deg); }
+.tgroup-body { margin-left: 52px; border-top: 1px dashed var(--border); }
+.tgroup-body .task { padding: 12px 0; }
+.tgroup-body .task:last-child { border-bottom: 0; }
+.tgroup-body .task-title .t { font-size: 14px; }
+.tgroup-body .task-sub:empty { display: none; }
 @media (max-width: 560px) {
   .task { grid-template-columns: 1fr; gap: 8px; }
   .task-glyph { display: none; }
+  .tgroup-head .task-glyph { display: flex; }
+  .tgroup-head { grid-template-columns: 34px 1fr; }
+  .tgroup-head .task-actions { grid-column: 1 / -1; }
+  .tgroup-body { margin-left: 0; }
 }
 
 /* ---------- settings (numbered sections) ---------- */

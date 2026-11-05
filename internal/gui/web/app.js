@@ -37,7 +37,7 @@
     course: null, // {key, type, id, data, err, loading, sel:Set, q, page, from}
     tasks: [],
     tasksSig: '',
-    dl: { tab: store.get('dlTab', 'all'), q: '', page: 1 },
+    dl: { tab: store.get('dlTab', 'all'), q: '', page: 1, open: new Set(store.get('dlOpen', [])), groups: null },
     page: '',
   };
   if (S.ex.sort === 1) S.ex.sort = 101; // the official "最新" order was replaced by 最新上线
@@ -1785,13 +1785,24 @@
     const filter = (TABS.find((t) => t[0] === S.dl.tab) || TABS[0])[2];
     const ql = S.dl.q.toLowerCase();
     const all = tasks.filter(filter).filter((t) => !ql || (t.title + '\n' + t.courseTitle).toLowerCase().indexOf(ql) >= 0);
+
+    // tasks of the same course are folded into one group, pages count groups
+    const groups = new Map();
+    for (const t of all) {
+      const key = t.typeKey + ':' + t.courseId;
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = { key, title: t.courseTitle, typeName: t.typeName, tasks: [] }));
+      g.tasks.push(t);
+    }
+    S.dl.groups = groups;
+    const allGroups = Array.from(groups.values());
     const size = PAGE_SIZE.dl;
     const prevPage = S.dl.page;
-    S.dl.page = clampPage(S.dl.page, all.length, size);
+    S.dl.page = clampPage(S.dl.page, allGroups.length, size);
     if (prevPage !== S.dl.page) full = true;
-    const list = all.slice((S.dl.page - 1) * size, S.dl.page * size);
+    const list = allGroups.slice((S.dl.page - 1) * size, S.dl.page * size);
 
-    const pagerHtml = pager('dl', S.dl.page, all.length, size);
+    const pagerHtml = pager('dl', S.dl.page, allGroups.length, size);
     const $pager = document.getElementById('dl-pager');
     if ($pager.innerHTML !== pagerHtml && !$pager.contains(document.activeElement)) $pager.innerHTML = pagerHtml;
 
@@ -1801,31 +1812,138 @@
     }
 
     // keyed patching keeps buttons stable between polls
+    const existingGroups = new Map();
+    $list.querySelectorAll('.tgroup[data-key]').forEach((el) => existingGroups.set(el.dataset.key, el));
     const existing = new Map();
     $list.querySelectorAll('.task[data-id]').forEach((el) => existing.set(el.dataset.id, el));
     const frag = document.createDocumentFragment();
-    for (const t of list) {
-      let el = existing.get(String(t.id));
-      if (!el || full) {
-        el = document.createElement('div');
-        el.className = 'task';
-        el.dataset.id = t.id;
-        el.innerHTML = `
-          <div class="task-glyph">${t.typeKey === 'n4' || t.typeKey === 'e0' ? icons.book : (t.isVideo ? icons.video : icons.doc)}</div>
-          <div class="task-main">
-            <div class="task-title"><span class="t"></span><span class="stw"></span></div>
-            <div class="task-sub"></div>
-            <div class="task-err" hidden></div>
-            <div class="progress"><i></i></div>
-            <div class="task-nums"><span class="l"></span><span class="r"></span></div>
+    for (const g of list) {
+      let gel = existingGroups.get(g.key);
+      if (!gel || full) {
+        gel = document.createElement('div');
+        gel.className = 'tgroup';
+        gel.dataset.key = g.key;
+        gel.innerHTML = `
+          <div class="task tgroup-head" data-action="dl-group-toggle" data-key="${esc(g.key)}" role="button" tabindex="0">
+            <div class="task-glyph tgroup-chev">${icons.next}</div>
+            <div class="task-main">
+              <div class="task-title"><span class="t"></span><span class="stw"></span></div>
+              <div class="task-sub"></div>
+              <div class="progress"><i></i></div>
+              <div class="task-nums"><span class="l"></span><span class="r"></span></div>
+            </div>
+            <div class="task-actions"></div>
           </div>
-          <div class="task-actions"></div>`;
+          <div class="tgroup-body"></div>`;
       }
-      patchTask(el, t);
-      frag.appendChild(el);
+      // a search shows matching articles without having to unfold each course
+      const open = !!ql || S.dl.open.has(g.key);
+      patchGroup(gel, g, open);
+      const body = gel.querySelector('.tgroup-body');
+      body.hidden = !open;
+      const rows = document.createDocumentFragment();
+      if (open) {
+        for (const t of g.tasks) {
+          let el = existing.get(String(t.id));
+          if (!el || full) el = createTaskEl(t);
+          patchTask(el, t);
+          rows.appendChild(el);
+        }
+      }
+      body.innerHTML = '';
+      body.appendChild(rows);
+      frag.appendChild(gel);
     }
     $list.innerHTML = '';
     $list.appendChild(frag);
+  }
+
+  function createTaskEl(t) {
+    const el = document.createElement('div');
+    el.className = 'task';
+    el.dataset.id = t.id;
+    el.innerHTML = `
+      <div class="task-glyph">${t.typeKey === 'n4' || t.typeKey === 'e0' ? icons.book : (t.isVideo ? icons.video : icons.doc)}</div>
+      <div class="task-main">
+        <div class="task-title"><span class="t"></span><span class="stw"></span></div>
+        <div class="task-sub"></div>
+        <div class="task-err" hidden></div>
+        <div class="progress"><i></i></div>
+        <div class="task-nums"><span class="l"></span><span class="r"></span></div>
+      </div>
+      <div class="task-actions"></div>`;
+    return el;
+  }
+
+  // patchGroup renders the summary row of one course
+  function patchGroup(gel, g, open) {
+    const head = gel.querySelector('.tgroup-head');
+    const set = (sel, prop, v) => { const n = head.querySelector(sel); if (n[prop] !== v) n[prop] = v; };
+    const ts = g.tasks;
+    const cnt = (f) => ts.filter(f).length;
+    const c = {
+      running: cnt((t) => t.status === 'running'),
+      queued: cnt((t) => t.status === 'queued'),
+      done: cnt((t) => t.status === 'done' || t.status === 'skipped'),
+      failed: cnt((t) => t.status === 'failed'),
+      canceled: cnt((t) => t.status === 'canceled'),
+    };
+    let status = 'done';
+    if (c.running) status = 'running';
+    else if (c.queued) status = 'queued';
+    else if (c.failed) status = 'failed';
+    else if (c.canceled) status = 'canceled';
+
+    gel.classList.toggle('open', open);
+    head.setAttribute('aria-expanded', String(open));
+    set('.t', 'textContent', g.title);
+    head.querySelector('.t').title = g.title;
+    set('.stw', 'innerHTML', `<span class="st ${status}">${STATUS_TEXT[status]}</span>`);
+    const parts = [g.typeName, `${ts.length} 个任务`];
+    if (c.running) parts.push(`下载中 ${c.running}`);
+    if (c.queued) parts.push(`等待中 ${c.queued}`);
+    if (c.failed) parts.push(`失败 ${c.failed}`);
+    if (c.canceled) parts.push(`已取消 ${c.canceled}`);
+    set('.task-sub', 'textContent', parts.join(' · '));
+
+    // finished tasks count fully, running ones by their byte progress
+    let units = c.done;
+    for (const t of ts) if (t.status === 'running' && t.total > 0) units += Math.min(1, t.done / t.total);
+    const pct = ts.length ? (units / ts.length) * 100 : 0;
+    const bar = head.querySelector('.progress');
+    bar.className = 'progress' + (c.done === ts.length ? ' done' : '');
+    bar.firstElementChild.style.width = pct + '%';
+    const speed = ts.reduce((s, t) => s + (t.status === 'running' ? t.speed || 0 : 0), 0);
+    set('.l', 'textContent', `${c.done} / ${ts.length} · ${pct.toFixed(0)}%`);
+    set('.r', 'textContent', speed > 0 ? fmtBytes(speed) + '/s' : '');
+
+    const acts = head.querySelector('.task-actions');
+    const canCancel = c.running + c.queued > 0;
+    const canRetry = ts.some((t) => t.status === 'failed' || t.status === 'canceled' || t.status === 'skipped');
+    const sig = `${canCancel}:${canRetry}:${ts[0].id}`;
+    if (acts.dataset.sig !== sig) {
+      acts.dataset.sig = sig;
+      const key = esc(g.key);
+      const b = (action, icon, title, cls) => `<button class="ibtn ${cls || ''}" data-action="${action}" data-key="${key}" data-id="${ts[0].id}" title="${title}" aria-label="${title}">${icon}</button>`;
+      let html = '';
+      if (canCancel) html += b('dl-group-cancel', icons.stop, '取消本课程的任务', 'danger');
+      if (canRetry) html += b('dl-group-retry', icons.retry, '重试本课程失败 / 取消 / 跳过的任务', 'accent');
+      html += b('task-open', icons.folder, '打开课程目录');
+      html += b('dl-group-remove', icons.trash, '移除本课程的任务', 'danger');
+      acts.innerHTML = html;
+    }
+  }
+
+  function groupTaskIds(key, f) {
+    const g = S.dl.groups && S.dl.groups.get(key);
+    return g ? g.tasks.filter(f).map((t) => t.id) : [];
+  }
+
+  function toggleGroup(key) {
+    if (S.dl.open.has(key)) S.dl.open.delete(key);
+    else S.dl.open.add(key);
+    store.set('dlOpen', Array.from(S.dl.open));
+    renderTaskList(false);
   }
 
   function patchTask(el, t) {
@@ -1833,7 +1951,7 @@
     set('.t', 'textContent', t.title);
     el.querySelector('.t').title = t.title;
     set('.stw', 'innerHTML', `<span class="st ${t.status}">${STATUS_TEXT[t.status] || t.status}</span>`);
-    set('.task-sub', 'textContent', `${t.courseTitle} · ${t.typeName}` + (t.stage && t.status !== 'done' ? ` · ${t.stage}` : ''));
+    set('.task-sub', 'textContent', t.stage && t.status !== 'done' ? t.stage : '');
     const err = el.querySelector('.task-err');
     err.hidden = !t.error;
     if (t.error && err.textContent !== t.error) { err.textContent = t.error; err.title = t.error; }
@@ -2235,6 +2353,21 @@
       case 'task-cancel': taskAction('cancel', [Number(id)]); break;
       case 'task-retry': taskAction('retry', [Number(id)]); break;
       case 'task-remove': taskAction('remove', [Number(id)]); break;
+      case 'dl-group-toggle': toggleGroup(el.dataset.key); break;
+      case 'dl-group-cancel': {
+        const ids = groupTaskIds(el.dataset.key, isActive);
+        if (ids.length && confirm(`确定取消本课程的 ${ids.length} 个任务吗?`)) taskAction('cancel', ids);
+        break;
+      }
+      case 'dl-group-retry':
+        taskAction('retry', groupTaskIds(el.dataset.key, (t) => t.status === 'failed' || t.status === 'canceled' || t.status === 'skipped'));
+        break;
+      case 'dl-group-remove': {
+        const ids = groupTaskIds(el.dataset.key, () => true);
+        const busy = ids.length !== groupTaskIds(el.dataset.key, (t) => !isActive(t)).length;
+        if (!busy || confirm('本课程有进行中的任务, 移除会同时取消它们, 确定吗?')) taskAction('remove', ids);
+        break;
+      }
       case 'task-open':
       case 'open-root':
         try { await api('POST', '/api/open', { taskId: a === 'task-open' ? Number(id) : 0 }); } catch (ex) { toast(ex.message, 'error'); }
@@ -2252,6 +2385,7 @@
       if (e.key === 'ArrowRight') { readerFlip('next'); return; }
     }
     if (e.key === 'Enter' && t.classList && t.classList.contains('book')) t.click();
+    if ((e.key === 'Enter' || e.key === ' ') && t.classList && t.classList.contains('tgroup-head')) { e.preventDefault(); t.click(); }
     if (e.key === 'Enter' && t.dataset && t.dataset.jump) {
       const n = Number(t.value);
       const pages = Number(t.dataset.pages);
