@@ -213,22 +213,30 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.RLock()
-	cfg := s.cfg
-	s.mu.RUnlock()
-	cfg.Gcid, cfg.Gcess = req.Gcid, req.Gcess
-	cookies := config.ReadCookiesFromInput(&cfg)
-	if err := geektime.Auth(cookies); err != nil {
+	if err := s.applyLogin(req.Gcid, req.Gcess); err != nil {
 		writeError(w, http.StatusUnauthorized, "登录校验失败: "+err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// applyLogin verifies the cookies against geektime and makes them the current session
+func (s *Server) applyLogin(gcid, gcess string) error {
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	cfg.Gcid, cfg.Gcess = gcid, gcess
+	cookies := config.ReadCookiesFromInput(&cfg)
+	if err := authCookies(cookies); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
-	s.cfg.Gcid, s.cfg.Gcess = req.Gcid, req.Gcess
+	s.cfg.Gcid, s.cfg.Gcess = gcid, gcess
 	s.client = geektime.NewClient(cookies)
 	s.mu.Unlock()
 	s.clearCache()
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	return nil
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

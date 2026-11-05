@@ -374,10 +374,17 @@ mark { background: none; color: var(--accent); border-bottom: 1px solid var(--ac
 .field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
 .field label { font-size: 12px; letter-spacing: .14em; color: var(--muted); }
 .field .input { height: 44px; font-family: var(--mono); font-size: 13px; }
-.login .btn-primary { width: 100%; height: 46px; margin-top: 8px; font-size: 15px; }
+.login .btn-block { width: 100%; height: 46px; margin-top: 8px; font-size: 15px; justify-content: center; }
+.quick-login .btn-block { margin-top: 0; }
+.quick-src { margin-top: 10px; color: var(--muted); font-size: 13px; }
+.quick-src b { color: var(--text-2); font-weight: 600; }
+.quick-src .select { width: 100%; height: 38px; }
+.or { display: flex; align-items: center; gap: 14px; margin: 28px 0 22px; color: var(--muted); font-size: 12px; letter-spacing: .14em; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
 .help { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 13px; }
 .help ol { margin: 8px 0 0; padding-left: 18px; }
 .help li { margin: 4px 0; }
+.help p { margin: 14px 0 0; line-height: 1.7; }
 code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); padding: 1px 6px; border-radius: 3px; }
 
 /* ---------- course (colophon + table of contents) ---------- */

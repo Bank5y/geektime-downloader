@@ -423,6 +423,11 @@
           <h1>登录极客时间</h1>
           <p class="sub">使用浏览器中的 Cookie 登录。凭据只保存在本机内存中, 关闭程序即失效。</p>
           <div class="error-box" id="login-err" hidden></div>
+          <div class="quick-login">
+            <button class="btn btn-primary btn-block" id="quick-login" type="button" disabled>${icons.key}从浏览器快速登录</button>
+            <div class="quick-src" id="quick-src">正在检测本机浏览器…</div>
+          </div>
+          <div class="or"><span>或手动填写 Cookie</span></div>
           <div class="field">
             <label for="gcid">GCID</label>
             <input class="input" id="gcid" name="gcid" spellcheck="false" required>
@@ -431,7 +436,7 @@
             <label for="gcess">GCESS</label>
             <input class="input" id="gcess" name="gcess" spellcheck="false" required>
           </div>
-          <button class="btn btn-primary" type="submit">登录</button>
+          <button class="btn btn-block" type="submit" id="login-submit">登录</button>
           <div class="help">
             如何获取 Cookie
             <ol>
@@ -439,10 +444,22 @@
               <li>按 <code>F12</code> 打开开发者工具, 进入 Application → Cookies</li>
               <li>复制 <code>GCID</code> 与 <code>GCESS</code> 的值填入上方</li>
             </ol>
+            <p>快速登录会读取本机 Chrome / Edge / Brave / Chromium 中 <code>time.geekbang.org</code> 的这两个 Cookie (复制浏览器的 Cookie 文件后以无界面方式由浏览器自身解密, 不会改动浏览器数据), 需要先在该浏览器中登录极客时间。暂不支持 Firefox 与 Safari。</p>
           </div>
         </form>
       </div>`;
     const form = document.getElementById('login-form');
+    const loggedIn = (msg) => {
+      S.loggedIn = true;
+      S.products = null;
+      S.meta = null;
+      S.ex.data = null;
+      loadMarks();
+      toast(msg, 'success');
+      location.hash = '#/explore';
+      render();
+    };
+    setupQuickLogin(loggedIn);
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = form.querySelector('button[type=submit]');
@@ -452,14 +469,7 @@
       err.hidden = true;
       try {
         await api('POST', '/api/login', { gcid: form.gcid.value, gcess: form.gcess.value });
-        S.loggedIn = true;
-        S.products = null;
-        S.meta = null;
-        S.ex.data = null;
-        loadMarks();
-        toast('登录成功', 'success');
-        location.hash = '#/explore';
-        render();
+        loggedIn('登录成功');
       } catch (ex) {
         err.textContent = ex.message;
         err.hidden = false;
@@ -468,7 +478,48 @@
         btn.textContent = '登录';
       }
     });
-    document.getElementById('gcid').focus();
+  }
+
+  // quick login: the server reads GCID / GCESS from the local browsers, values never reach the page
+  async function setupQuickLogin(loggedIn) {
+    const btn = document.getElementById('quick-login');
+    const $src = document.getElementById('quick-src');
+    const err = document.getElementById('login-err');
+    let sources = [];
+    try {
+      sources = (await api('GET', '/api/login/browsers')).sources || [];
+    } catch (_) { /* treated as none */ }
+    if (!document.body.contains(btn)) return;
+    const label = (x) => x.browser + (x.profile ? ' · ' + x.profile : '');
+    if (!sources.length) {
+      $src.textContent = '未检测到 Chrome / Edge / Brave / Chromium, 请手动填写 Cookie';
+      document.getElementById('gcid').focus();
+      return;
+    }
+    $src.innerHTML = sources.length === 1
+      ? `将从 <b>${esc(label(sources[0]))}</b> 读取`
+      : `<select class="select" id="quick-pick" aria-label="选择浏览器">
+          <option value="">自动 (依次尝试 ${sources.length} 个浏览器配置)</option>
+          ${sources.map((x) => `<option value="${esc(x.id)}">${esc(label(x))}</option>`).join('')}
+        </select>`;
+    btn.disabled = false;
+    btn.focus();
+    btn.addEventListener('click', async () => {
+      const pick = document.getElementById('quick-pick');
+      const html = btn.innerHTML;
+      btn.disabled = true;
+      btn.textContent = '正在读取浏览器登录信息…';
+      err.hidden = true;
+      try {
+        const r = await api('POST', '/api/login/browser', { id: pick ? pick.value : '' });
+        loggedIn('已使用 ' + r.source + ' 的登录信息登录');
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+        btn.disabled = false;
+        btn.innerHTML = html;
+      }
+    });
   }
 
   // ---------- 全部课程 (catalog) ----------

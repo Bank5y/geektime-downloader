@@ -53,6 +53,8 @@ type Server struct {
 	introCache  map[string]introDTO
 	courseCache map[string]geektime.Course
 
+	browserLogin sync.Mutex // one browser cookie import at a time
+
 	tasks   *TaskManager
 	records *recordStore
 
@@ -147,6 +149,8 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("GET /api/login/browsers", s.handleBrowserSources)
+	mux.HandleFunc("POST /api/login/browser", s.handleBrowserLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/products", s.handleProducts)
 	mux.HandleFunc("GET /api/catalog/meta", s.handleCatalogMeta)
