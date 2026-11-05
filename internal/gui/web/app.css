@@ -274,7 +274,7 @@ svg { flex-shrink: 0; }
 .shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 40px 26px; }
 @media (max-width: 520px) { .shelf { grid-template-columns: repeat(2, 1fr); gap: 32px 16px; } }
 .shelf.loading { opacity: .45; pointer-events: none; transition: opacity .2s; }
-.book { cursor: pointer; min-width: 0; outline: none; }
+.book { cursor: pointer; min-width: 0; outline: none; display: flex; flex-direction: column; }
 .book-cover {
   position: relative; aspect-ratio: 3 / 4; border-radius: 2px; overflow: hidden;
   background: var(--surface-2); outline: 1px solid color-mix(in srgb, var(--text) 10%, transparent); outline-offset: -1px;
@@ -304,7 +304,7 @@ svg { flex-shrink: 0; }
 .stamp:hover { background: var(--accent-hover); box-shadow: inset 0 0 0 2px var(--accent-hover), inset 0 0 0 3px var(--on-accent); }
 .stamp.locked { background: var(--surface); color: var(--muted); box-shadow: inset 0 0 0 1px var(--rule); cursor: not-allowed; }
 @media (hover: none) { .stamp { opacity: 1; transform: none; } }
-.book-meta { padding-top: 14px; }
+.book-meta { padding-top: 14px; flex: 1; display: flex; flex-direction: column; }
 .book-kicker { font-size: 11px; letter-spacing: .1em; color: var(--accent); display: flex; gap: 8px; align-items: center; }
 .book-kicker .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--muted); }
 .book-kicker .k-muted { color: var(--muted); letter-spacing: .02em; font-family: var(--mono); }
@@ -645,7 +645,9 @@ code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); 
 .book-flag.free { background: var(--accent); color: var(--on-accent); }
 
 /* ---------- card dates ---------- */
-.book-dates { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 16px; }
+.book-dates { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 25px; }
+.book-author { margin-bottom: 10px; }
+.book-dates:empty { border-top-color: transparent; }
 .book-dates .recent { color: var(--accent); }
 .book-dates .recent::before { content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin: 0 5px 1px 0; vertical-align: middle; }
 .book-dates .pending { opacity: .5; }
