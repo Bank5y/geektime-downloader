@@ -345,31 +345,18 @@
     if (!d) return '<div class="peek-list">' + Array.from({ length: 6 }).map((_, i) => `<div class="skeleton" style="height:11px;margin:10px 0;width:${90 - i * 9}%"></div>`).join('') + '</div>';
     if (d.error) return `<div class="peek-note err">目录加载失败: ${esc(d.error)}</div>`;
     if (!d.chapters.length) return '<div class="peek-note">暂无目录</div>';
-    // budget of lines so the card stays compact: chapter rows + a few lessons each
-    const MAX_LINES = 16;
-    const chapters = d.chapters;
-    const named = chapters.length > 1 || chapters[0].title;
-    const perChapter = !named ? MAX_LINES : Math.max(0, Math.min(3, Math.floor((MAX_LINES - Math.min(chapters.length, 10)) / Math.max(1, Math.min(chapters.length, 10)))));
-    let lines = 0;
-    let html = '';
-    let shown = 0;
-    for (const c of chapters) {
-      if (lines >= MAX_LINES) break;
-      shown++;
-      if (named) {
-        html += `<div class="peek-ch"><span class="no">${pad(shown)}</span><span class="t">${esc(c.title || '未分章节')}</span><span class="n">${c.count}</span></div>`;
-        lines++;
-      }
-      const take = Math.min(c.articles.length, perChapter, MAX_LINES - lines);
-      html += c.articles.slice(0, take).map((t) => `<div class="peek-a">${esc(t)}</div>`).join('');
-      lines += take;
-      // named chapters show their size on the right, an extra "more" line would be noise
-      if (!named && c.articles.length > take) html += `<div class="peek-a more">… 另有 ${c.articles.length - take} 讲</div>`;
-    }
-    const rest = chapters.length - shown;
+    const named = d.chapters.length > 1 || d.chapters[0].title;
+    let n = 0;
+    const html = d.chapters.map((c, ci) => {
+      const head = named ? `<div class="peek-ch"><span class="no">${pad(ci + 1)}</span><span class="t">${esc(c.title || '未分章节')}</span><span class="n">${c.count}</span></div>` : '';
+      const items = c.articles.map((a) => {
+        n++;
+        return `<div class="peek-a" title="${esc(a)}"><span class="i">${pad(n)}</span><span class="t">${esc(a)}</span></div>`;
+      }).join('');
+      return `<section>${head}${items}</section>`;
+    }).join('');
     const planned = p.articleCount > d.total ? `已更新 ${d.total} / ${p.articleCount} 讲` : `共 ${d.total} 讲`;
-    const foot = named ? `${chapters.length} 章 · ${planned}${rest > 0 ? ` · 另有 ${rest} 章` : ''}` : planned;
-    return `<div class="peek-list">${html}</div><div class="peek-foot">${foot}<span>点击查看完整目录</span></div>`;
+    return `<div class="peek-list">${html}</div><div class="peek-foot">${named ? d.chapters.length + ' 章 · ' : ''}${planned}<span>点击封面查看课程</span></div>`;
   }
 
   function peekHtml(p, d) {
@@ -388,7 +375,7 @@
 
   function placePeek(el, box) {
     const r = el.getBoundingClientRect();
-    const gap = 14;
+    const gap = 10;
     let left = r.right + gap;
     let side = 'right';
     if (left + PEEK_WIDTH > window.innerWidth - 12) { left = r.left - gap - PEEK_WIDTH; side = 'left'; }
@@ -415,6 +402,7 @@
     box.innerHTML = peekHtml(p, ready);
     box.classList.remove('show');
     if (!placePeek(el, box)) { hidePeek(); return; }
+    box.scrollTop = 0;
     requestAnimationFrame(() => box.classList.add('show'));
     if (ready || !p.openable || p.direct) return;
     loadOutline(p).then((d) => d, (e) => ({ error: e.message, chapters: [] })).then((d) => {
@@ -424,32 +412,55 @@
     });
   }
 
-  function hidePeek() {
-    clearTimeout(peekTimer);
+  let hideTimer = 0;
+  // hide the preview; a pending show for another card survives unless all is set
+  function hidePeek(all) {
+    clearTimeout(hideTimer);
+    if (all !== false) clearTimeout(peekTimer);
     peekFor = null;
     const box = document.getElementById('peek');
     if (box) box.classList.remove('show');
   }
+  const PEEK_HIDE_DELAY = 320;
+  function scheduleHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => hidePeek(false), PEEK_HIDE_DELAY);
+  }
 
   if (canHover) {
+    const inPeek = (t) => !!(t && t.closest && t.closest('#peek'));
+    const bookOf = (t) => (t && t.closest && t.closest('.shelf .book[data-id]')) || null;
     document.addEventListener('mouseover', (e) => {
-      const el = e.target.closest && e.target.closest('.shelf .book[data-id]');
-      if (!el || el === peekFor) return;
+      if (inPeek(e.target)) { clearTimeout(hideTimer); clearTimeout(peekTimer); return; }
+      const el = bookOf(e.target);
+      if (!el) return;
+      if (el === peekFor) { clearTimeout(hideTimer); return; }
       clearTimeout(peekTimer);
-      if (peekFor) hidePeek();
+      if (peekFor) scheduleHide();
       const p = productIndex.get(el.dataset.id);
       if (!p) return;
-      peekTimer = setTimeout(() => { if (el.matches(':hover')) showPeek(el, p); }, PEEK_DELAY);
+      peekTimer = setTimeout(() => {
+        if (!el.matches(':hover')) return;
+        clearTimeout(hideTimer);
+        showPeek(el, p);
+      }, PEEK_DELAY);
     });
     document.addEventListener('mouseout', (e) => {
-      const el = e.target.closest && e.target.closest('.shelf .book[data-id]');
-      if (!el || (e.relatedTarget && el.contains(e.relatedTarget))) return;
-      hidePeek();
+      const to = e.relatedTarget;
+      const from = inPeek(e.target) ? 'peek' : (bookOf(e.target) ? 'book' : '');
+      if (!from) return;
+      // still inside the same element, or moving between the card and its preview
+      if (from === 'peek' && inPeek(to)) return;
+      if (from === 'book' && bookOf(e.target).contains(to)) return;
+      if (inPeek(to) || (peekFor && to && peekFor.contains(to))) return;
+      if (from === 'book' && bookOf(e.target) !== peekFor) clearTimeout(peekTimer);
+      if (peekFor) scheduleHide();
     });
-    window.addEventListener('scroll', hidePeek, { passive: true });
-    window.addEventListener('blur', hidePeek);
-    document.addEventListener('mousedown', hidePeek, true);
-    window.addEventListener('hashchange', hidePeek);
+    window.addEventListener('scroll', () => hidePeek(), { passive: true });
+    window.addEventListener('blur', () => hidePeek());
+    document.addEventListener('mousedown', (e) => { if (!inPeek(e.target)) hidePeek(); }, true);
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hidePeek(); });
+    window.addEventListener('hashchange', () => hidePeek());
   }
 
   // ---------- launch / last update dates ----------
