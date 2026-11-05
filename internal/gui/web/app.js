@@ -28,6 +28,8 @@
     lib: Object.assign({ cat: '全部', media: 'all', status: 'all', dl: 'all', sort: 'recent' }, store.get('lib', {}), { q: '', page: 1 }),
     // download marks: courseId -> {done, total, marked}
     marks: {},
+    // courseId -> {first, last, count}: publish time of the first / newest article
+    dates: new Map(),
     // batch selection on shelves
     pick: { on: false, sel: new Map() },
     batch: null,
@@ -303,9 +305,67 @@
           <div class="book-kicker"><span>${esc(category(p))}</span>${count ? `<span class="dot"></span><span class="k-muted">${count}</span>` : ''}${p.isFinish ? '<span class="dot"></span><span class="k-muted">完结</span>' : ''}</div>
           <h3 class="book-title" title="${esc(p.subtitle || '')}">${highlight(p.title, q)}</h3>
           <div class="book-author">${highlight(p.author || p.subtitle, q)}</div>
+          <div class="book-dates" data-dates="${p.id}">${datesHtml(p)}</div>
         </div>
       </article>`;
   }
+
+  // ---------- launch / last update dates ----------
+  const pad = (n) => String(n).padStart(2, '0');
+  function fmtDay(ts, withDay = true) {
+    const d = new Date(ts * 1000);
+    return d.getFullYear() + '.' + pad(d.getMonth() + 1) + (withDay ? '.' + pad(d.getDate()) : '');
+  }
+  // courses whose article list (and so the dates) can be looked up
+  const datable = (p) => p && !p.direct && p.typeKey !== 'n4' && p.typeKey !== 'e0' && p.courseId > 0;
+
+  function datesHtml(p) {
+    const d = S.dates.get(p.courseId) || {};
+    const launch = p.beginTime || d.first;
+    const parts = [];
+    if (launch) parts.push(`<span title="上线时间 ${fmtDay(launch)}">${fmtDay(launch, false)} 上线</span>`);
+    if (d.last) {
+      const recent = !p.isFinish && Date.now() / 1000 - d.last < 14 * 86400;
+      parts.push(`<span class="${recent ? 'recent' : ''}" title="最近一讲发布于 ${fmtDay(d.last)}">${fmtDay(d.last)} 更新</span>`);
+    } else if (datable(p) && !d.done) {
+      parts.push('<span class="pending">更新时间…</span>');
+    }
+    return parts.join('');
+  }
+
+  function patchDates(ids) {
+    document.querySelectorAll('[data-dates]').forEach((el) => {
+      const p = productIndex.get(el.dataset.dates);
+      if (!p || (ids && !ids.has(p.courseId))) return;
+      const html = datesHtml(p);
+      if (el.innerHTML !== html) el.innerHTML = html;
+    });
+  }
+
+  const datesPending = new Set();
+  // fetch missing dates for the courses currently on screen
+  const loadVisibleDates = debounce(async () => {
+    const need = [];
+    document.querySelectorAll('.book[data-id]').forEach((el) => {
+      const p = productIndex.get(el.dataset.id);
+      if (datable(p) && !S.dates.has(p.courseId) && !datesPending.has(p.courseId)) need.push(p);
+    });
+    for (let i = 0; i < need.length; i += 40) {
+      const chunk = need.slice(i, i + 40);
+      chunk.forEach((p) => datesPending.add(p.courseId));
+      const ids = chunk.map((p) => p.courseId);
+      const first = chunk.filter((p) => !p.beginTime).map((p) => p.courseId);
+      try {
+        const r = await api('GET', `/api/course/dates?ids=${ids.join(',')}&first=${first.join(',')}`);
+        for (const id of ids) S.dates.set(id, Object.assign({ done: true }, (r.dates || {})[id]));
+      } catch (_) {
+        for (const id of ids) S.dates.set(id, { done: true });
+      } finally {
+        ids.forEach((id) => datesPending.delete(id));
+      }
+      patchDates(new Set(ids));
+    }
+  }, 60);
 
   function skeletonShelf() {
     return '<div class="shelf">' + Array.from({ length: 12 }).map(() =>
@@ -663,6 +723,7 @@
     renderPickUI();
     $res.innerHTML = `<div class="shelf ${ex.loading ? 'loading' : ''} ${S.pick.on ? 'picking' : ''}">${d.items.map((p) => bookCard(p, ex.q)).join('')}</div>` +
       pager('explore', d.page, Math.max(d.total, d.more ? d.page * d.size + 1 : 0), d.size);
+    loadVisibleDates();
   }
 
   // ---------- batch selection ----------
@@ -1232,6 +1293,7 @@
     renderPickUI();
     $res.innerHTML = errHtml + `<div class="shelf ${S.pick.on ? 'picking' : ''}">` + pageItems.map((p) => bookCard(p, S.lib.q)).join('') + '</div>' +
       pager('mine', S.lib.page, list.length, size);
+    loadVisibleDates();
   }
 
   function quickOpen() {

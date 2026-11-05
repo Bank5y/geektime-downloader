@@ -98,6 +98,7 @@ type productDTO struct {
 	TypeName     string `json:"typeName"`
 	IsVideo      bool   `json:"isVideo"`
 	IsFinish     bool   `json:"isFinish"`
+	BeginTime    int64  `json:"beginTime,omitempty"` // launch time, unix seconds
 	ArticleCount int    `json:"articleCount"`
 	Unit         string `json:"unit"`
 	Direct       bool   `json:"direct"`    // no article selection, download as one video
@@ -120,6 +121,7 @@ func toProductDTO(p response.LearnProduct, order int) productDTO {
 		Code:        p.Type,
 		IsVideo:     p.IsVideo,
 		IsFinish:    p.IsFinish,
+		BeginTime:   p.BeginTime,
 		Unit:        p.Unit,
 		Purchased:   p.Extra.Sub.HadDone,
 		Order:       order,

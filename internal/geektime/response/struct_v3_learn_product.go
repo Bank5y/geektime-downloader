@@ -25,6 +25,7 @@ type LearnProduct struct {
 	IsVideo      bool   `json:"is_video"`
 	IsAudio      bool   `json:"is_audio"`
 	IsFinish     bool   `json:"is_finish"`
+	BeginTime    int64  `json:"begin_time"` // launch time (unix seconds), 0 for some video courses
 	IsUniversity bool   `json:"is_university"`
 	Title        string `json:"title"`
 	Subtitle     string `json:"subtitle"`
