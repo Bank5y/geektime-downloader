@@ -30,10 +30,11 @@ type cachedDates struct {
 	at       time.Time
 }
 
-// outlineCache holds public course outline data
+// outlineCache holds public course outline data, shared by dates and previews
 type outlineCache struct {
-	mu    sync.Mutex
-	dates map[int]cachedDates
+	mu       sync.Mutex
+	dates    map[int]cachedDates
+	previews map[string]cachedPreview
 }
 
 func (c *outlineCache) getDates(id int, needFirst bool) (courseDates, bool) {

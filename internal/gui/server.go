@@ -51,7 +51,7 @@ type Server struct {
 	products    []productDTO
 	catalogMeta *catalogMeta
 	introCache  map[string]introDTO
-	outline     outlineCache // public article dates
+	outline     outlineCache // public chapter outlines and article dates
 	courseCache map[string]geektime.Course
 
 	browserLogin sync.Mutex // one browser cookie import at a time
@@ -159,6 +159,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/course", s.handleCourse)
 	mux.HandleFunc("GET /api/course/intro", s.handleCourseIntro)
 	mux.HandleFunc("GET /api/course/dates", s.handleCourseDates)
+	mux.HandleFunc("GET /api/course/preview", s.handleCoursePreview)
 	mux.HandleFunc("GET /api/marks", s.handleMarks)
 	mux.HandleFunc("POST /api/unlock", s.handleUnlock)
 	mux.HandleFunc("POST /api/marks", s.handleSetMark)

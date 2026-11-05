@@ -310,6 +310,147 @@
       </article>`;
   }
 
+  // ---------- hover preview of the chapter outline ----------
+  const PEEK_DELAY = 420;
+  const PEEK_WIDTH = 340;
+  const peekCache = new Map(); // typeKey:courseId -> outline | Promise
+  const canHover = window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  let peekTimer = 0;
+  let peekFor = null; // the .book element the preview belongs to
+
+  function peekKey(p) { return p.typeKey + ':' + p.courseId; }
+
+  function loadOutline(p) {
+    const k = peekKey(p);
+    if (peekCache.has(k)) return Promise.resolve(peekCache.get(k));
+    const pr = api('GET', `/api/course/preview?type=${encodeURIComponent(p.typeKey)}&id=${p.courseId}`)
+      .then((d) => {
+        peekCache.set(k, d);
+        if (d.last || d.first) {
+          const old = S.dates.get(p.courseId) || {};
+          S.dates.set(p.courseId, Object.assign({}, old, { first: d.first || old.first, last: d.last || old.last, count: d.count || old.count, done: true }));
+          patchDates(new Set([p.courseId]));
+        }
+        return d;
+      })
+      .catch((e) => { peekCache.delete(k); throw e; });
+    peekCache.set(k, pr);
+    return pr;
+  }
+
+  function peekBodyHtml(p, d) {
+    if (!p.openable) return '<div class="peek-note">训练营的目录请在「我的课程」中查看</div>';
+    if (p.direct) return `<div class="peek-note">${esc(p.subtitle || '')}${p.subtitle ? '<br>' : ''}单个视频课程, 没有章节目录</div>`;
+    if (!d) return '<div class="peek-list">' + Array.from({ length: 6 }).map((_, i) => `<div class="skeleton" style="height:11px;margin:10px 0;width:${90 - i * 9}%"></div>`).join('') + '</div>';
+    if (d.error) return `<div class="peek-note err">目录加载失败: ${esc(d.error)}</div>`;
+    if (!d.chapters.length) return '<div class="peek-note">暂无目录</div>';
+    // budget of lines so the card stays compact: chapter rows + a few lessons each
+    const MAX_LINES = 16;
+    const chapters = d.chapters;
+    const named = chapters.length > 1 || chapters[0].title;
+    const perChapter = !named ? MAX_LINES : Math.max(0, Math.min(3, Math.floor((MAX_LINES - Math.min(chapters.length, 10)) / Math.max(1, Math.min(chapters.length, 10)))));
+    let lines = 0;
+    let html = '';
+    let shown = 0;
+    for (const c of chapters) {
+      if (lines >= MAX_LINES) break;
+      shown++;
+      if (named) {
+        html += `<div class="peek-ch"><span class="no">${pad(shown)}</span><span class="t">${esc(c.title || '未分章节')}</span><span class="n">${c.count}</span></div>`;
+        lines++;
+      }
+      const take = Math.min(c.articles.length, perChapter, MAX_LINES - lines);
+      html += c.articles.slice(0, take).map((t) => `<div class="peek-a">${esc(t)}</div>`).join('');
+      lines += take;
+      // named chapters show their size on the right, an extra "more" line would be noise
+      if (!named && c.articles.length > take) html += `<div class="peek-a more">… 另有 ${c.articles.length - take} 讲</div>`;
+    }
+    const rest = chapters.length - shown;
+    const planned = p.articleCount > d.total ? `已更新 ${d.total} / ${p.articleCount} 讲` : `共 ${d.total} 讲`;
+    const foot = named ? `${chapters.length} 章 · ${planned}${rest > 0 ? ` · 另有 ${rest} 章` : ''}` : planned;
+    return `<div class="peek-list">${html}</div><div class="peek-foot">${foot}<span>点击查看完整目录</span></div>`;
+  }
+
+  function peekHtml(p, d) {
+    const dt = S.dates.get(p.courseId) || {};
+    const launch = p.beginTime || (d && d.first) || dt.first;
+    const last = (d && d.last) || dt.last;
+    const meta = [category(p), p.articleCount ? `${p.articleCount} 讲` : '', p.isFinish ? '已完结' : (datable(p) ? '更新中' : '')]
+      .filter(Boolean).map(esc).join(' · ');
+    const dates = [launch ? `上线 ${fmtDay(launch)}` : '', last ? `最近更新 ${fmtDay(last)}` : ''].filter(Boolean).join('<span class="sep"></span>');
+    return `
+      <div class="peek-kicker">${meta}</div>
+      <div class="peek-title">${esc(p.title)}</div>
+      ${dates ? `<div class="peek-dates">${dates}</div>` : ''}
+      ${peekBodyHtml(p, d)}`;
+  }
+
+  function placePeek(el, box) {
+    const r = el.getBoundingClientRect();
+    const gap = 14;
+    let left = r.right + gap;
+    let side = 'right';
+    if (left + PEEK_WIDTH > window.innerWidth - 12) { left = r.left - gap - PEEK_WIDTH; side = 'left'; }
+    if (left < 12) return false;
+    box.style.left = left + 'px';
+    const h = box.offsetHeight;
+    box.style.top = Math.max(76, Math.min(r.top, window.innerHeight - h - 12)) + 'px';
+    box.dataset.side = side;
+    return true;
+  }
+
+  function showPeek(el, p) {
+    let box = document.getElementById('peek');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'peek';
+      box.className = 'peek';
+      box.setAttribute('role', 'tooltip');
+      document.body.appendChild(box);
+    }
+    peekFor = el;
+    const cached = peekCache.get(peekKey(p));
+    const ready = cached && !(cached instanceof Promise) ? cached : null;
+    box.innerHTML = peekHtml(p, ready);
+    box.classList.remove('show');
+    if (!placePeek(el, box)) { hidePeek(); return; }
+    requestAnimationFrame(() => box.classList.add('show'));
+    if (ready || !p.openable || p.direct) return;
+    loadOutline(p).then((d) => d, (e) => ({ error: e.message, chapters: [] })).then((d) => {
+      if (peekFor !== el || !document.body.contains(el)) return;
+      box.innerHTML = peekHtml(p, d);
+      placePeek(el, box);
+    });
+  }
+
+  function hidePeek() {
+    clearTimeout(peekTimer);
+    peekFor = null;
+    const box = document.getElementById('peek');
+    if (box) box.classList.remove('show');
+  }
+
+  if (canHover) {
+    document.addEventListener('mouseover', (e) => {
+      const el = e.target.closest && e.target.closest('.shelf .book[data-id]');
+      if (!el || el === peekFor) return;
+      clearTimeout(peekTimer);
+      if (peekFor) hidePeek();
+      const p = productIndex.get(el.dataset.id);
+      if (!p) return;
+      peekTimer = setTimeout(() => { if (el.matches(':hover')) showPeek(el, p); }, PEEK_DELAY);
+    });
+    document.addEventListener('mouseout', (e) => {
+      const el = e.target.closest && e.target.closest('.shelf .book[data-id]');
+      if (!el || (e.relatedTarget && el.contains(e.relatedTarget))) return;
+      hidePeek();
+    });
+    window.addEventListener('scroll', hidePeek, { passive: true });
+    window.addEventListener('blur', hidePeek);
+    document.addEventListener('mousedown', hidePeek, true);
+    window.addEventListener('hashchange', hidePeek);
+  }
+
   // ---------- launch / last update dates ----------
   const pad = (n) => String(n).padStart(2, '0');
   function fmtDay(ts, withDay = true) {
