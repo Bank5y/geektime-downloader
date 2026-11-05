@@ -58,6 +58,7 @@ type Task struct {
 	Total       int64      `json:"total"`
 	Done        int64      `json:"done"`
 	Speed       float64    `json:"speed"`
+	Bytes       int64      `json:"bytes"` // bytes downloaded by this run over all stages
 	CreatedAt   int64      `json:"createdAt"`
 	StartedAt   int64      `json:"startedAt,omitempty"`
 	FinishedAt  int64      `json:"finishedAt,omitempty"`
@@ -139,7 +140,7 @@ func (t *Task) reset() {
 	t.Status = StatusQueued
 	t.Stage = ""
 	t.Error = ""
-	t.Total, t.Done, t.Speed = 0, 0, 0
+	t.Total, t.Done, t.Speed, t.Bytes, t.lastBytes = 0, 0, 0, 0, 0
 	t.StartedAt, t.FinishedAt = 0, 0
 	t.CreatedAt = time.Now().UnixMilli()
 }
@@ -430,8 +431,6 @@ func (r *taskReporter) SetTotal(total int64) {
 	defer r.m.mu.Unlock()
 	r.t.Total = total
 	r.t.Done = 0
-	r.t.lastBytes = 0
-	r.t.lastTick = time.Now()
 }
 
 func (r *taskReporter) Add(n int64) {
@@ -442,16 +441,22 @@ func (r *taskReporter) Add(n int64) {
 	if t.Total > 0 && t.Done > t.Total {
 		t.Done = t.Total
 	}
+	t.Bytes += n
 	now := time.Now()
 	t.lastUpdate = now
+	if t.lastTick.IsZero() {
+		t.lastTick = now
+	}
+	// measured on the cumulative bytes so many small files in a row
+	// (images of an article) still produce a speed
 	if elapsed := now.Sub(t.lastTick).Seconds(); elapsed >= 1 {
-		instant := float64(t.Done-t.lastBytes) / elapsed
+		instant := float64(t.Bytes-t.lastBytes) / elapsed
 		if t.Speed == 0 {
 			t.Speed = instant
 		} else {
 			t.Speed = 0.6*instant + 0.4*t.Speed
 		}
-		t.lastBytes = t.Done
+		t.lastBytes = t.Bytes
 		t.lastTick = now
 	}
 }

@@ -1746,6 +1746,10 @@
           </div>
         </div>
         <div class="ledger-stats" id="dl-stats"></div>
+        <div class="dl-overall" id="dl-overall" hidden>
+          <div class="ov-head"><span class="ov-title">总进度</span><span class="ov-pct"></span><span class="spacer"></span><span class="ov-meta"></span></div>
+          <div class="progress"><i></i></div>
+        </div>
         <div class="ledger-tools" id="results-top">
           <div class="tabs" id="dl-tabs"></div>
           <div class="search-sm">${icons.search}<input class="input" id="dl-q" placeholder="查找任务" value="${esc(S.dl.q)}"></div>
@@ -1771,14 +1775,13 @@
     const tasks = S.tasks;
     const n = (f) => tasks.filter(f).length;
     const st = { running: n((t) => t.status === 'running'), queued: n((t) => t.status === 'queued'), done: n((t) => t.status === 'done' || t.status === 'skipped'), failed: n((t) => t.status === 'failed') };
-    const speed = tasks.reduce((s, t) => s + (t.status === 'running' ? t.speed || 0 : 0), 0);
-
     document.getElementById('dl-stats').innerHTML = [
       ['下载中', st.running, 'var(--info)'], ['等待中', st.queued, 'var(--muted)'], ['已完成', st.done, 'var(--success)'], ['失败', st.failed, 'var(--danger)'],
     ].map(([k, v, c]) => `<div><div class="v">${v}</div><div class="k"><i style="background:${c}"></i>${k}</div></div>`).join('');
     const s = S.settings || {};
     document.getElementById('dl-sub').textContent =
-      `同时 ${s.concurrentTasks || 1} 个任务 · 每个任务 ${s.threads || 1} 线程` + (speed > 0 ? ` · 当前 ${fmtBytes(speed)}/s` : '');
+      `同时 ${s.concurrentTasks || 1} 个任务 · 每个任务 ${s.threads || 1} 线程`;
+    patchOverall(tasks);
 
     document.getElementById('dl-tabs').innerHTML = TABS.map(([k, label, f]) =>
       `<button class="tab ${S.dl.tab === k ? 'active' : ''}" data-action="dl-tab" data-tab="${k}">${label}<span class="n">${n(f)}</span></button>`).join('');
@@ -1876,6 +1879,106 @@
     return el;
   }
 
+  // ---- speed / eta ----
+  // speeds of courses and of everything are measured from the growth of the
+  // cumulative bytes between polls, so finished tasks and small files count too
+  const rates = { all: 0, groups: new Map(), prev: new Map(), at: 0 };
+  function measureRates(tasks) {
+    const now = Date.now();
+    const dt = now - rates.at;
+    if (rates.at && dt < 500) return;
+    const delta = new Map();
+    let all = 0;
+    const next = new Map();
+    for (const t of tasks) {
+      const b = t.bytes || 0;
+      next.set(t.id, b);
+      const p = rates.prev.get(t.id);
+      const d = p === undefined ? 0 : Math.max(0, b - p);
+      if (!d) continue;
+      const key = t.typeKey + ':' + t.courseId;
+      delta.set(key, (delta.get(key) || 0) + d);
+      all += d;
+    }
+    if (rates.at) {
+      const smooth = (old, bytes) => { const v = (bytes / dt) * 1000; return old ? 0.5 * v + 0.5 * old : v; };
+      const anyRunning = tasks.some((t) => t.status === 'running');
+      rates.all = anyRunning ? smooth(rates.all, all) : 0;
+      const groups = new Map();
+      for (const t of tasks) {
+        if (t.status !== 'running') continue;
+        const key = t.typeKey + ':' + t.courseId;
+        if (!groups.has(key)) groups.set(key, smooth(rates.groups.get(key) || 0, delta.get(key) || 0));
+      }
+      rates.groups = groups;
+    }
+    rates.prev = next;
+    rates.at = now;
+  }
+
+  // etaOf estimates the time left of tasks from the average duration of the
+  // finished ones, running the concurrent task setting in parallel
+  function etaOf(ts) {
+    const durs = ts.filter((t) => t.status === 'done' && t.startedAt && t.finishedAt).map((t) => t.finishedAt - t.startedAt);
+    if (!durs.length) {
+      // nothing finished yet: only known when every remaining task reports its size and speed
+      const rest = ts.filter(isActive);
+      if (!rest.length || rest.some((t) => t.status !== 'running' || !(t.total > 0) || !(t.speed > 0))) return 0;
+      return Math.max(...rest.map((t) => ((t.total - t.done) / t.speed) * 1000));
+    }
+    const avg = durs.reduce((a, b) => a + b, 0) / durs.length;
+    const now = Date.now();
+    let units = 0;
+    for (const t of ts) {
+      if (t.status === 'queued') units += 1;
+      else if (t.status === 'running') {
+        if (t.total > 0) units += 1 - Math.min(1, t.done / t.total);
+        else units += Math.max(0, avg - (now - (t.startedAt || now))) / avg;
+      }
+    }
+    const conc = (S.settings && S.settings.concurrentTasks) || 1;
+    return (units * avg) / conc;
+  }
+
+  function rateText(speed, eta) {
+    const parts = [];
+    if (speed > 0) parts.push(fmtBytes(speed) + '/s');
+    if (eta > 0) parts.push('剩余 ' + fmtDuration(eta));
+    return parts.join(' · ');
+  }
+
+  // patchOverall renders progress and speed of all tasks
+  function patchOverall(tasks) {
+    const el = document.getElementById('dl-overall');
+    if (!el) return;
+    const ts = tasks.filter((t) => t.status !== 'canceled');
+    el.hidden = !ts.length;
+    if (!ts.length) return;
+    let units = 0;
+    let done = 0;
+    let failed = 0;
+    let running = 0;
+    let bytes = 0;
+    for (const t of ts) {
+      bytes += t.bytes || 0;
+      if (t.status === 'done' || t.status === 'skipped') { done++; units++; }
+      else if (t.status === 'failed') failed++;
+      else if (t.status === 'running') { running++; if (t.total > 0) units += Math.min(1, t.done / t.total); }
+    }
+    const pct = (units / ts.length) * 100;
+    const active = ts.some(isActive);
+    el.querySelector('.ov-pct').textContent = `${done} / ${ts.length} · ${pct.toFixed(0)}%` + (failed ? ` · 失败 ${failed}` : '');
+    const meta = [];
+    if (active) meta.push(`速度 ${fmtBytes(rates.all)}/s`);
+    if (bytes > 0) meta.push(`本次已下载 ${fmtBytes(bytes)}`);
+    const eta = active ? etaOf(ts) : 0;
+    if (eta > 0) meta.push(`预计剩余 ${fmtDuration(eta)}`);
+    el.querySelector('.ov-meta').textContent = meta.join(' · ');
+    const bar = el.querySelector('.progress');
+    bar.className = 'progress' + (done === ts.length ? ' done' : '');
+    bar.firstElementChild.style.width = pct + '%';
+  }
+
   // patchGroup renders the summary row of one course
   function patchGroup(gel, g, open) {
     const head = gel.querySelector('.tgroup-head');
@@ -1914,9 +2017,9 @@
     const bar = head.querySelector('.progress');
     bar.className = 'progress' + (c.done === ts.length ? ' done' : '');
     bar.firstElementChild.style.width = pct + '%';
-    const speed = ts.reduce((s, t) => s + (t.status === 'running' ? t.speed || 0 : 0), 0);
-    set('.l', 'textContent', `${c.done} / ${ts.length} · ${pct.toFixed(0)}%`);
-    set('.r', 'textContent', speed > 0 ? fmtBytes(speed) + '/s' : '');
+    const bytes = ts.reduce((s, t) => s + (t.bytes || 0), 0);
+    set('.l', 'textContent', `${c.done} / ${ts.length} · ${pct.toFixed(0)}%` + (bytes > 0 ? ` · 已下载 ${fmtBytes(bytes)}` : ''));
+    set('.r', 'textContent', rateText(c.running ? rates.groups.get(g.key) || 0 : 0, c.running + c.queued ? etaOf(ts) : 0));
 
     const acts = head.querySelector('.task-actions');
     const canCancel = c.running + c.queued > 0;
@@ -1970,12 +2073,14 @@
     let left = '';
     let right = '';
     if (t.total > 0 && t.status !== 'done') left = `${fmtBytes(t.done)} / ${fmtBytes(t.total)} · ${pct.toFixed(0)}%`;
+    else if (t.status === 'running' && t.bytes > 0) left = `已下载 ${fmtBytes(t.bytes)}`;
     if (t.status === 'running') {
       if (t.speed > 0) right = fmtBytes(t.speed) + '/s';
       if (t.speed > 0 && t.total > 0) right += ' · 剩余 ' + fmtDuration(((t.total - t.done) / t.speed) * 1000);
       if (!right && t.startedAt) right = '已用时 ' + fmtDuration(Date.now() - t.startedAt);
     } else if (t.status === 'done' && t.startedAt && t.finishedAt) {
-      left = (t.total > 0 ? fmtBytes(t.total) + ' · ' : '') + '用时 ' + fmtDuration(t.finishedAt - t.startedAt);
+      const size = t.bytes || t.total;
+      left = (size > 0 ? fmtBytes(size) + ' · ' : '') + '用时 ' + fmtDuration(t.finishedAt - t.startedAt);
     }
     set('.l', 'textContent', left);
     set('.r', 'textContent', right);
@@ -2226,12 +2331,13 @@
   let lastFinished = -1;
   function applyTasks(tasks) {
     S.tasks = tasks;
+    measureRates(tasks);
     const finished = tasks.filter((t) => t.status === 'done' || t.status === 'skipped').length;
     if (finished !== lastFinished) {
       if (lastFinished >= 0) loadMarksSoon();
       lastFinished = finished;
     }
-    const sig = JSON.stringify(tasks.map((t) => [t.id, t.status, t.done, t.total, t.stage, t.speed, t.error]));
+    const sig = JSON.stringify(tasks.map((t) => [t.id, t.status, t.done, t.total, t.bytes, t.stage, t.speed, t.error]));
     const changed = sig !== S.tasksSig;
     S.tasksSig = sig;
     updateChrome();
