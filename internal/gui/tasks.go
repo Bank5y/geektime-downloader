@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,7 +71,8 @@ type Task struct {
 	dir        string
 	cancel     context.CancelFunc
 	removed    bool
-	overwrite  bool // re-download even if files exist
+	overwrite  bool     // re-download even if files exist
+	files      []string // output files reported by this run
 	lastBytes  int64
 	lastTick   time.Time
 	lastUpdate time.Time
@@ -141,6 +143,7 @@ func (t *Task) reset() {
 	t.Stage = ""
 	t.Error = ""
 	t.Total, t.Done, t.Speed, t.Bytes, t.lastBytes = 0, 0, 0, 0, 0
+	t.files = nil
 	t.StartedAt, t.FinishedAt = 0, 0
 	t.CreatedAt = time.Now().UnixMilli()
 }
@@ -319,7 +322,17 @@ func (m *TaskManager) run(ctx context.Context, t *Task) {
 
 	if err == nil {
 		// remember what has been downloaded, also for skipped (nothing to download) articles
-		m.srv.records.addArticle(t.CourseID, t.CourseTitle, t.ArticleID)
+		m.mu.Lock()
+		rec := articleRecord{
+			CourseID:    t.CourseID,
+			CourseTitle: t.CourseTitle,
+			TypeKey:     t.TypeKey,
+			ArticleID:   t.ArticleID,
+			Title:       t.Title,
+			Files:       relativeFiles(t.dir, t.files),
+		}
+		m.mu.Unlock()
+		m.srv.records.addArticle(rec)
 	}
 
 	m.mu.Lock()
@@ -459,6 +472,32 @@ func (r *taskReporter) Add(n int64) {
 		t.lastBytes = t.Bytes
 		t.lastTick = now
 	}
+}
+
+// AddFile implements progress.FileRecorder
+func (r *taskReporter) AddFile(path string) {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	for _, f := range r.t.files {
+		if f == path {
+			return
+		}
+	}
+	r.t.files = append(r.t.files, path)
+}
+
+// relativeFiles makes output paths relative to the course folder, so records
+// stay valid when the download folder is moved; paths outside it are dropped
+func relativeFiles(dir string, paths []string) []string {
+	out := []string{}
+	for _, p := range paths {
+		rel, err := filepath.Rel(dir, p)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	return out
 }
 
 func withTaskReporter(ctx context.Context, m *TaskManager, t *Task) context.Context {

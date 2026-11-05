@@ -296,6 +296,9 @@ func download(ctx context.Context,
 	reporter.SetStage("合并视频")
 	// Read temp ts files, decrypt and merge into the one final video file
 	err = mergeTSFiles(tempVideoDir, tsFileNames, filenamifyTitle, projectDir, decryptKey, isVodEncryptVideo)
+	if err == nil {
+		progress.File(ctx, filepath.Join(projectDir, filenamifyTitle+TSExtension))
+	}
 
 	return
 }

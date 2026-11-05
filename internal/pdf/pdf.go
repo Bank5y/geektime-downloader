@@ -24,6 +24,7 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/geektime"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/filenamify"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/progress"
 )
 
 // PDFExtension ...
@@ -129,6 +130,7 @@ func PrintArticlePageToPDF(parentCtx context.Context,
 		return err
 	}
 
+	progress.File(parentCtx, pdfFileName)
 	return nil
 }
 

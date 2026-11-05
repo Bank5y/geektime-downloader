@@ -9,6 +9,7 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/downloader"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/filenamify"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/progress"
 )
 
 const (
@@ -32,6 +33,8 @@ func DownloadAudio(ctx context.Context, downloadAudioURL, dir, title string) err
 	if err != nil {
 		logger.Errorf(err, "Failed to download article audio, title: %s", title)
 		_ = os.Remove(audioFileName)
+	} else {
+		progress.File(ctx, audioFileName)
 	}
 	logger.Infof("Finish download article audio, title: %s", title)
 	return err

@@ -18,6 +18,7 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/downloader"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/filenamify"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/progress"
 )
 
 var (
@@ -89,6 +90,7 @@ func Download(ctx context.Context, html, title, dir string, aid int, comments []
 	if err != nil {
 		return err
 	}
+	progress.File(ctx, markdwonFileName)
 	logger.Infof("Finish download article markdown, articleID: %d, title: %s", aid, title)
 	return nil
 }

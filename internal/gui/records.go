@@ -11,8 +11,14 @@ import (
 
 	_ "modernc.org/sqlite" // pure Go driver, keeps CGO_ENABLED=0 cross builds working
 
+	"github.com/nicoxiang/geektime-downloader/internal/pkg/filenamify"
 	"github.com/nicoxiang/geektime-downloader/internal/pkg/logger"
 )
+
+// courseDirName is the folder of a course inside the download folder
+func courseDirName(title string) string {
+	return filenamify.Filenamify(title)
+}
 
 // markDTO is the download state of a course sent to the browser
 type markDTO struct {
@@ -35,6 +41,31 @@ CREATE TABLE IF NOT EXISTS downloaded_articles (
 	finished_at INTEGER NOT NULL,
 	PRIMARY KEY (course_id, article_id)
 );`
+
+// recordColumns are added to databases created before they existed
+var recordColumns = []struct{ table, column, def string }{
+	{"courses", "type_key", "TEXT NOT NULL DEFAULT ''"}, // product type key used to open the course
+	{"courses", "dir", "TEXT NOT NULL DEFAULT ''"},      // course folder name in the download folder
+	{"downloaded_articles", "title", "TEXT"},            // article title, NULL for old records
+	// json array of output files relative to the course folder; NULL for old
+	// records (unknown), [] when the article had nothing to download
+	{"downloaded_articles", "files", "TEXT"},
+}
+
+func migrateRecords(db *sql.DB) error {
+	for _, c := range recordColumns {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, c.table, c.column).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.column + ` ` + c.def); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // recordStore persists download records in a SQLite database.
 // Failures are logged and never break downloads.
@@ -73,6 +104,10 @@ func openRecordStore(path string) (*recordStore, error) {
 	// a single connection serializes writes and keeps :memory: one database
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(recordSchema); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrateRecords(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -126,18 +161,35 @@ func (r *recordStore) setTotal(courseID int, title string, total int, create boo
 		total, title, title, courseID)
 }
 
-func (r *recordStore) addArticle(courseID int, title string, articleID int) {
+// articleRecord is a finished download
+type articleRecord struct {
+	CourseID    int
+	CourseTitle string
+	TypeKey     string
+	ArticleID   int
+	Title       string
+	Files       []string // output files relative to the course folder
+}
+
+func (r *recordStore) addArticle(a articleRecord) {
+	files := a.Files
+	if files == nil {
+		files = []string{}
+	}
+	b, _ := json.Marshal(files)
 	r.withTx(func(tx *sql.Tx) error {
 		now := time.Now().Unix()
-		if err := upsertCourse(tx, courseID, title); err != nil {
+		if err := upsertCourse(tx, a.CourseID, a.CourseTitle); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE courses SET updated_at = ? WHERE id = ?`, now, courseID); err != nil {
+		if _, err := tx.Exec(`UPDATE courses SET updated_at = ?, dir = ?,
+			type_key = CASE WHEN ? <> '' THEN ? ELSE type_key END WHERE id = ?`,
+			now, courseDirName(a.CourseTitle), a.TypeKey, a.TypeKey, a.CourseID); err != nil {
 			return err
 		}
-		_, err := tx.Exec(`INSERT INTO downloaded_articles (course_id, article_id, finished_at) VALUES (?, ?, ?)
-			ON CONFLICT(course_id, article_id) DO UPDATE SET finished_at = excluded.finished_at`,
-			courseID, articleID, now)
+		_, err := tx.Exec(`INSERT INTO downloaded_articles (course_id, article_id, finished_at, title, files) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(course_id, article_id) DO UPDATE SET finished_at = excluded.finished_at, title = excluded.title, files = excluded.files`,
+			a.CourseID, a.ArticleID, now, a.Title, string(b))
 		return err
 	})
 }
@@ -221,100 +273,59 @@ func (r *recordStore) articles(courseID int) ([]int, bool) {
 	return ids, marked
 }
 
-// recordCourse is a course that has a record
-type recordCourse struct {
-	ID    int
-	Title string
+// storedArticle is one downloaded article with what is needed to verify it
+type storedArticle struct {
+	CourseID    int
+	CourseTitle string
+	TypeKey     string
+	Dir         string // course folder name
+	ArticleID   int
+	Title       string
+	Files       []string // nil when unknown (records written before files were stored)
 }
 
-// courses lists all courses that have a record
-func (r *recordStore) courses() []recordCourse {
-	var out []recordCourse
+// downloadedArticles lists all downloaded article records
+func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
+	var out []storedArticle
 	if r.db == nil {
-		return out
+		return out, nil
 	}
-	rows, err := r.db.Query(`SELECT id, title FROM courses ORDER BY id`)
+	rows, err := r.db.Query(`SELECT a.course_id, c.title, c.type_key, c.dir, a.article_id, COALESCE(a.title, ''), a.files
+		FROM downloaded_articles a JOIN courses c ON c.id = a.course_id ORDER BY a.course_id, a.article_id`)
 	if err != nil {
-		logger.Warnf("Failed to read download records: %v", err)
-		return out
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var c recordCourse
-		if err := rows.Scan(&c.ID, &c.Title); err == nil {
-			out = append(out, c)
+		var a storedArticle
+		var files sql.NullString
+		if err := rows.Scan(&a.CourseID, &a.CourseTitle, &a.TypeKey, &a.Dir, &a.ArticleID, &a.Title, &files); err != nil {
+			return nil, err
 		}
+		if files.Valid {
+			a.Files = []string{}
+			if err := json.Unmarshal([]byte(files.String), &a.Files); err != nil {
+				a.Files = nil // unreadable, treat as unknown
+			}
+		}
+		if a.Dir == "" {
+			a.Dir = courseDirName(a.CourseTitle)
+		}
+		out = append(out, a)
 	}
-	return out
+	return out, rows.Err()
 }
 
-// syncArticles makes the downloaded articles of a course exactly ids, keeping
-// the finish time of articles already recorded and the manual mark. total < 0
-// keeps the stored total. A course without records is only created when ids
-// is not empty.
-func (r *recordStore) syncArticles(courseID int, title string, total int, ids []int) (added, removed int) {
-	r.withTx(func(tx *sql.Tx) error {
-		added, removed = 0, 0
-		var exists bool
-		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?)`, courseID).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists && len(ids) == 0 {
-			return nil
-		}
-		if err := upsertCourse(tx, courseID, title); err != nil {
-			return err
-		}
-		if total >= 0 {
-			if _, err := tx.Exec(`UPDATE courses SET total = ? WHERE id = ?`, total, courseID); err != nil {
-				return err
-			}
-		}
+// removeArticle deletes one downloaded article record
+func (r *recordStore) removeArticle(courseID, articleID int) {
+	r.exec(`DELETE FROM downloaded_articles WHERE course_id = ? AND article_id = ?`, courseID, articleID)
+}
 
-		keep := make(map[int]bool, len(ids))
-		for _, id := range ids {
-			keep[id] = true
-		}
-		rows, err := tx.Query(`SELECT article_id FROM downloaded_articles WHERE course_id = ?`, courseID)
-		if err != nil {
-			return err
-		}
-		have := make(map[int]bool)
-		for rows.Next() {
-			var id int
-			if err := rows.Scan(&id); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			have[id] = true
-		}
-		_ = rows.Close()
-
-		now := time.Now().Unix()
-		for id := range have {
-			if keep[id] {
-				continue
-			}
-			if _, err := tx.Exec(`DELETE FROM downloaded_articles WHERE course_id = ? AND article_id = ?`, courseID, id); err != nil {
-				return err
-			}
-			removed++
-		}
-		for id := range keep {
-			if have[id] {
-				continue
-			}
-			if _, err := tx.Exec(`INSERT INTO downloaded_articles (course_id, article_id, finished_at) VALUES (?, ?, ?)`, courseID, id, now); err != nil {
-				return err
-			}
-			added++
-		}
-		if added+removed > 0 {
-			_, err = tx.Exec(`UPDATE courses SET updated_at = ? WHERE id = ?`, now, courseID)
-		}
-		return err
-	})
-	return added, removed
+// setArticleFiles updates title and files of a downloaded article record
+func (r *recordStore) setArticleFiles(courseID, articleID int, title string, files []string) {
+	b, _ := json.Marshal(files)
+	r.exec(`UPDATE downloaded_articles SET title = CASE WHEN ? <> '' THEN ? ELSE title END, files = ?
+		WHERE course_id = ? AND article_id = ?`, title, title, string(b), courseID, articleID)
 }
 
 // legacyCourseRecord is one course of the old downloads.json

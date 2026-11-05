@@ -29,6 +29,19 @@ func FromContext(ctx context.Context) Reporter {
 	return r
 }
 
+// FileRecorder is optionally implemented by a Reporter that wants to know
+// which output files a download produced (or found already existing).
+type FileRecorder interface {
+	AddFile(path string)
+}
+
+// File is a nil-safe helper to report an output file to the reporter in ctx.
+func File(ctx context.Context, path string) {
+	if r, ok := FromContext(ctx).(FileRecorder); ok {
+		r.AddFile(path)
+	}
+}
+
 // Stage is a nil-safe helper to call SetStage on the reporter in ctx.
 func Stage(ctx context.Context, stage string) {
 	if r := FromContext(ctx); r != nil {

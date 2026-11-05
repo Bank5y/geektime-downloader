@@ -2,11 +2,9 @@ package gui
 
 import (
 	"errors"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/nicoxiang/geektime-downloader/internal/audio"
@@ -18,73 +16,23 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/video"
 )
 
-// syncCourseGap spaces out course info requests that are not cached yet
+// syncCourseGap spaces out course info requests needed by old records
 const syncCourseGap = 300 * time.Millisecond
 
-// outputExts are the files that mean an article has been downloaded,
-// any one of them is enough whatever the current output settings are
-var outputExts = map[string]bool{
-	markdown.MDExtension: true,
-	pdf.PDFExtension:     true,
-	audio.MP3Extension:   true,
-	video.TSExtension:    true,
-}
+// outputExts are the files that mean an article has been downloaded
+var outputExts = []string{markdown.MDExtension, pdf.PDFExtension, audio.MP3Extension, video.TSExtension}
 
-// syncResult summarizes a records sync for the browser
+// syncResult summarizes a records verification for the browser
 type syncResult struct {
-	Courses    int      `json:"courses"`    // courses whose records were synced
-	Added      int      `json:"added"`      // article records added because files exist
-	Removed    int      `json:"removed"`    // article records removed because files are gone
-	Unresolved []string `json:"unresolved"` // local course folders that could not be synced
+	Checked    int      `json:"checked"`    // article records verified
+	Removed    int      `json:"removed"`    // records removed because their files are gone
+	Backfilled int      `json:"backfilled"` // old records whose files were looked up once
+	Unresolved []string `json:"unresolved"` // courses whose old records could not be verified
 	Aborted    string   `json:"aborted,omitempty"`
 }
 
-// localOutputs returns the file names (without extension) of downloaded
-// articles below a course folder, nil if the folder does not exist.
-func localOutputs(dir string) map[string]bool {
-	if _, err := os.Stat(dir); err != nil {
-		return nil
-	}
-	out := make(map[string]bool)
-	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			// images of markdown and videos embedded in text articles
-			if p != dir && (d.Name() == "images" || d.Name() == "videos") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(d.Name()))
-		if outputExts[ext] {
-			out[strings.TrimSuffix(d.Name(), filepath.Ext(d.Name()))] = true
-		}
-		return nil
-	})
-	return out
-}
-
-// syncCandidate is a course whose records may need syncing
-type syncCandidate struct {
-	id      int
-	title   string
-	typeKey string // empty when unknown
-	direct  bool   // one video product (每日一课 etc.), not a list of articles
-}
-
 func (s *Server) handleSyncRecords(w http.ResponseWriter, r *http.Request) {
-	client := s.requireClient(w)
-	if client == nil {
-		return
-	}
-	products, err := s.myProducts(client)
-	if err != nil {
-		writeAPIError(w, err)
-		return
-	}
-	res, err := s.syncRecords(client, products)
+	res, err := s.syncRecords(s.currentClient())
 	if err != nil {
 		writeAPIError(w, err)
 		return
@@ -92,118 +40,165 @@ func (s *Server) handleSyncRecords(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"result": res, "marks": s.records.marks()})
 }
 
-// myProducts returns the cached product list, loading it when needed
-func (s *Server) myProducts(client *geektime.Client) ([]productDTO, error) {
-	s.cacheMu.Lock()
-	cached := s.products
-	s.cacheMu.Unlock()
-	if cached != nil {
-		return cached, nil
-	}
-	list, err := client.MyProducts()
-	if err != nil {
-		return nil, err
-	}
-	products := make([]productDTO, 0, len(list))
-	for i, p := range list {
-		dto := toProductDTO(p, i)
-		dto.Purchased = true
-		products = append(products, dto)
-	}
-	s.cacheMu.Lock()
-	s.products = products
-	s.cacheMu.Unlock()
-	return products, nil
-}
-
-// syncRecords makes download records match the files in the download folder.
-// Candidates are the purchased courses plus courses that already have records.
-func (s *Server) syncRecords(client *geektime.Client, products []productDTO) (syncResult, error) {
+// syncRecords verifies download records against the download folder: records
+// whose files are all gone are removed. Only records are checked, local files
+// without a record are left alone. Records written before files were stored
+// need the article titles once, which is the only time the api is used.
+func (s *Server) syncRecords(client *geektime.Client) (syncResult, error) {
 	res := syncResult{Unresolved: []string{}}
 	cfg, _ := s.snapshotConfig()
-
-	seen := make(map[int]bool)
-	var cands []syncCandidate
-	for _, p := range products {
-		if !p.Openable || seen[p.CourseID] {
-			continue
-		}
-		seen[p.CourseID] = true
-		cands = append(cands, syncCandidate{id: p.CourseID, title: p.Title, typeKey: p.TypeKey, direct: p.Direct})
-	}
-	for _, c := range s.records.courses() {
-		if !seen[c.ID] {
-			seen[c.ID] = true
-			cands = append(cands, syncCandidate{id: c.ID, title: c.Title})
-		}
+	rows, err := s.records.downloadedArticles()
+	if err != nil {
+		return res, err
 	}
 
-	for _, c := range cands {
-		local := localOutputs(filepath.Join(cfg.DownloadFolder, filenamify.Filenamify(c.title)))
-		if local == nil {
-			// folder is gone: nothing is downloaded, no need to ask the api
-			if _, removed := s.records.syncArticles(c.id, c.title, -1, nil); removed > 0 {
-				res.Courses++
-				res.Removed += removed
-			}
+	var legacy []storedArticle
+	for _, a := range rows {
+		if a.Files == nil {
+			legacy = append(legacy, a)
 			continue
 		}
+		res.Checked++
+		if len(a.Files) == 0 {
+			continue // nothing was downloaded for it (no content), nothing to check
+		}
+		courseDir := filepath.Join(cfg.DownloadFolder, a.Dir)
+		existing := existingFiles(courseDir, a.Files)
+		switch {
+		case len(existing) == 0:
+			s.records.removeArticle(a.CourseID, a.ArticleID)
+			res.Removed++
+		case len(existing) < len(a.Files):
+			s.records.setArticleFiles(a.CourseID, a.ArticleID, "", existing)
+		}
+	}
 
-		ids, total, err := s.syncCourseArticles(client, c, local)
-		if err != nil {
-			if errors.Is(err, geektime.ErrGeekTimeRateLimit) || errors.Is(err, geektime.ErrAuthFailed) {
-				res.Aborted = err.Error()
-				return res, nil
-			}
-			logger.Warnf("Failed to sync download records of %s (%d): %v", c.title, c.id, err)
-			res.Unresolved = append(res.Unresolved, c.title)
-			continue
+	if len(legacy) > 0 {
+		if err := s.backfillLegacy(client, cfg.DownloadFolder, legacy, &res); err != nil {
+			res.Aborted = err.Error()
 		}
-		added, removed := s.records.syncArticles(c.id, c.title, total, ids)
-		res.Courses++
-		res.Added += added
-		res.Removed += removed
 	}
 	return res, nil
 }
 
-// syncCourseArticles returns ids of the articles of a course found in local
-func (s *Server) syncCourseArticles(client *geektime.Client, c syncCandidate, local map[string]bool) ([]int, int, error) {
-	key := c.typeKey
+// existingFiles returns the files (relative to dir) that still exist
+func existingFiles(dir string, files []string) []string {
+	out := []string{}
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f))); err == nil {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// backfillLegacy looks up the files of old records by article title once and
+// stores them, so later syncs need no api at all. It returns an error only
+// when syncing has to stop (rate limit / login).
+func (s *Server) backfillLegacy(client *geektime.Client, root string, legacy []storedArticle, res *syncResult) error {
+	byCourse := make(map[int][]storedArticle)
+	var order []int
+	for _, a := range legacy {
+		if _, ok := byCourse[a.CourseID]; !ok {
+			order = append(order, a.CourseID)
+		}
+		byCourse[a.CourseID] = append(byCourse[a.CourseID], a)
+	}
+
+	for _, id := range order {
+		arts := byCourse[id]
+		first := arts[0]
+		courseDir := filepath.Join(root, first.Dir)
+		if _, err := os.Stat(courseDir); err != nil {
+			// the whole course folder is gone, no need to know the titles
+			for _, a := range arts {
+				s.records.removeArticle(a.CourseID, a.ArticleID)
+				res.Checked++
+				res.Removed++
+			}
+			continue
+		}
+		if client == nil {
+			res.Unresolved = append(res.Unresolved, first.CourseTitle)
+			continue
+		}
+
+		titles, sections, err := s.articleTitles(client, first)
+		if err != nil {
+			if errors.Is(err, geektime.ErrGeekTimeRateLimit) || errors.Is(err, geektime.ErrAuthFailed) {
+				return err
+			}
+			logger.Warnf("Failed to verify old download records of %s (%d): %v", first.CourseTitle, id, err)
+			res.Unresolved = append(res.Unresolved, first.CourseTitle)
+			continue
+		}
+		for _, a := range arts {
+			title, ok := titles[a.ArticleID]
+			if !ok {
+				continue // no longer in the course, leave it as it is
+			}
+			res.Checked++
+			res.Backfilled++
+			found := expectedFiles(courseDir, sections[a.ArticleID], title)
+			if len(found) == 0 {
+				s.records.removeArticle(a.CourseID, a.ArticleID)
+				res.Removed++
+				continue
+			}
+			s.records.setArticleFiles(a.CourseID, a.ArticleID, title, found)
+		}
+	}
+	return nil
+}
+
+// articleTitles loads article titles and section folders of a course
+func (s *Server) articleTitles(client *geektime.Client, a storedArticle) (map[int]string, map[int]string, error) {
+	key := a.TypeKey
 	if key == "" {
 		key = autoKey
 	}
 	option, ok := productTypeByKey(key)
 	if !ok {
-		return nil, 0, errors.New("未知的课程类型")
+		return nil, nil, errors.New("未知的课程类型")
 	}
-
-	if c.direct || !option.NeedSelectArticle {
-		if len(local) == 0 {
-			return []int{}, 1, nil
-		}
-		info, err := client.ProductInfo(c.id)
-		if err != nil {
-			return nil, 0, err
-		}
-		return []int{info.Data.Info.Article.ID}, 1, nil
+	if !option.NeedSelectArticle {
+		return nil, nil, errors.New("单视频产品的旧记录无法校验")
 	}
-
 	s.cacheMu.Lock()
-	_, cached := s.courseCache[typeKeyOf(option)+":"+itoa(c.id)]
+	_, cached := s.courseCache[typeKeyOf(option)+":"+itoa(a.CourseID)]
 	s.cacheMu.Unlock()
-	course, _, err := s.loadCourse(client, option, c.id, false)
+	course, _, err := s.loadCourse(client, option, a.CourseID, false)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 	if !cached {
 		time.Sleep(syncCourseGap)
 	}
-	ids := []int{}
-	for _, a := range course.Articles {
-		if local[filenamify.Filenamify(a.Title)] {
-			ids = append(ids, a.AID)
+	titles := make(map[int]string, len(course.Articles))
+	sections := make(map[int]string, len(course.Articles))
+	for _, art := range course.Articles {
+		titles[art.AID] = art.Title
+		sections[art.AID] = art.SectionTitle
+	}
+	return titles, sections, nil
+}
+
+// expectedFiles returns the output files of an article that exist, named the
+// way the downloader names them, relative to the course folder
+func expectedFiles(courseDir, section, title string) []string {
+	name := filenamify.Filenamify(title)
+	dirs := []string{""}
+	if section != "" {
+		dirs = append(dirs, filenamify.Filenamify(section))
+	}
+	out := []string{}
+	for _, d := range dirs {
+		for _, ext := range outputExts {
+			rel := filepath.Join(d, name+ext)
+			if _, err := os.Stat(filepath.Join(courseDir, rel)); err == nil {
+				out = append(out, filepath.ToSlash(rel))
+			}
 		}
 	}
-	return ids, len(course.Articles), nil
+	return out
 }

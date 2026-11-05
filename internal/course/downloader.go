@@ -122,12 +122,14 @@ func (d *CourseDownloader) DownloadArticle(course geektime.Course, productType u
 		}
 		skip := d.skipDownloadTextArticle(article, columnDir, overwrite)
 		if skip {
+			reportExistingFiles(d.ctx, columnDir, article.Title, pdf.PDFExtension, markdown.MDExtension, audio.MP3Extension)
 			return nil
 		}
 		return d.downloadTextArticle(article, columnDir, overwrite)
 	} else {
 		skip := d.skipDownloadVideoArticle(article, columnDir, overwrite)
 		if skip {
+			reportExistingFiles(d.ctx, columnDir, article.Title, video.TSExtension)
 			return nil
 		}
 		return d.downloadVideoArticle(course, productType, article, columnDir)
@@ -159,6 +161,7 @@ func (d *CourseDownloader) DownloadUniversityArticle(course geektime.Course, pro
 	}
 	if detail.Data.VideoID != "" {
 		if d.skipDownloadVideoArticle(article, columnDir, overwrite) {
+			reportExistingFiles(d.ctx, columnDir, article.Title, video.TSExtension)
 			return false, nil
 		}
 		return false, d.downloadVideoArticle(course, productType, article, columnDir)
@@ -168,10 +171,22 @@ func (d *CourseDownloader) DownloadUniversityArticle(course geektime.Course, pro
 	}
 	mdFile := filepath.Join(columnDir, filenamify.Filenamify(article.Title)+markdown.MDExtension)
 	if files.CheckFileExists(mdFile) && !overwrite {
+		progress.File(d.ctx, mdFile)
 		return false, nil
 	}
 	progress.Stage(d.ctx, "生成 Markdown")
 	return false, markdown.Download(d.ctx, detail.Data.ArticleContent, article.Title, columnDir, article.AID, nil)
+}
+
+// reportExistingFiles reports the outputs of an article that already exist,
+// used when a download is skipped because of them.
+func reportExistingFiles(ctx context.Context, dir, title string, exts ...string) {
+	base := filepath.Join(dir, filenamify.Filenamify(title))
+	for _, ext := range exts {
+		if files.CheckFileExists(base + ext) {
+			progress.File(ctx, base+ext)
+		}
+	}
 }
 
 func increaseDownloadedTextArticleCount(total int, downloaded *int) {
