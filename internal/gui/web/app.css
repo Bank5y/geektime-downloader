@@ -453,15 +453,15 @@ code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); 
 .dl-overall .ov-pct, .dl-overall .ov-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .dl-overall .spacer { flex: 1; }
 .dl-overall .progress { height: 4px; margin-top: 8px; }
-.ledger-stats > div { padding: 18px 0 18px 22px; border-left: 1px solid var(--rule); }
-.ledger-stats > div:first-child { border-left: 0; padding-left: 0; }
+.ledger-stats > * { padding: 18px 0 18px 22px; border-left: 1px solid var(--rule); }
+.ledger-stats > *:first-child { border-left: 0; padding-left: 0; }
 .ledger-stats .v { font-family: var(--serif); font-size: 44px; line-height: 1.05; font-weight: 600; font-variant-numeric: tabular-nums; }
 .ledger-stats .k { color: var(--muted); font-size: 12px; letter-spacing: .14em; display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .ledger-stats .k i { width: 7px; height: 7px; border-radius: 50%; }
 @media (max-width: 640px) {
   .ledger-stats { grid-template-columns: repeat(2, 1fr); }
-  .ledger-stats > div:nth-child(3) { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
-  .ledger-stats > div:nth-child(4) { border-top: 1px solid var(--rule); }
+  .ledger-stats > *:nth-child(3) { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
+  .ledger-stats > *:nth-child(4) { border-top: 1px solid var(--rule); }
   .ledger-stats .v { font-size: 34px; }
 }
 .ledger-tools { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--rule); scroll-margin-top: 90px; }
@@ -493,6 +493,18 @@ code { font-family: var(--mono); font-size: .9em; background: var(--surface-2); 
 @keyframes slide { 0% { left: -25%; } 100% { left: 100%; } }
 .task-nums { display: flex; justify-content: space-between; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
 .task-actions { display: flex; gap: 2px; min-width: 104px; justify-content: flex-end; }
+/* local page */
+.ledger-stats a.stat-link { color: inherit; text-decoration: none; }
+.ledger-stats a.stat-link:hover .k { color: var(--accent); }
+.task-warn { color: var(--warn); font-size: 12px; margin-top: 4px; }
+.fchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.fchip { font: inherit; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border: 1px solid var(--rule); border-radius: 999px; background: transparent; color: var(--text-2); cursor: pointer; }
+.fchip:hover { color: var(--accent); border-color: var(--accent); }
+.fchip.missing { color: var(--danger); border-style: dashed; cursor: default; }
+.fchip.muted { color: var(--muted); cursor: default; border-style: dashed; }
+.task-time { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+a.ibtn { display: inline-flex; align-items: center; justify-content: center; }
+
 /* tasks folded by course */
 .tgroup { border-bottom: 1px solid var(--border); }
 .tgroup-head { border-bottom: 0; cursor: pointer; user-select: none; }

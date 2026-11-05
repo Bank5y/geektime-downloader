@@ -281,6 +281,7 @@ type storedArticle struct {
 	Dir         string // course folder name
 	ArticleID   int
 	Title       string
+	FinishedAt  int64
 	Files       []string // nil when unknown (records written before files were stored)
 }
 
@@ -290,7 +291,7 @@ func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
 	if r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.Query(`SELECT a.course_id, c.title, c.type_key, c.dir, a.article_id, COALESCE(a.title, ''), a.files
+	rows, err := r.db.Query(`SELECT a.course_id, c.title, c.type_key, c.dir, a.article_id, COALESCE(a.title, ''), a.finished_at, a.files
 		FROM downloaded_articles a JOIN courses c ON c.id = a.course_id ORDER BY a.course_id, a.article_id`)
 	if err != nil {
 		return nil, err
@@ -299,7 +300,7 @@ func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
 	for rows.Next() {
 		var a storedArticle
 		var files sql.NullString
-		if err := rows.Scan(&a.CourseID, &a.CourseTitle, &a.TypeKey, &a.Dir, &a.ArticleID, &a.Title, &files); err != nil {
+		if err := rows.Scan(&a.CourseID, &a.CourseTitle, &a.TypeKey, &a.Dir, &a.ArticleID, &a.Title, &a.FinishedAt, &files); err != nil {
 			return nil, err
 		}
 		if files.Valid {
@@ -314,6 +315,50 @@ func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// courseInfo is the stored state of a course
+type courseInfo struct {
+	Total     int
+	Marked    bool
+	UpdatedAt int64
+}
+
+// courseMeta returns total / mark / update time of all recorded courses
+func (r *recordStore) courseMeta() map[int]courseInfo {
+	out := make(map[int]courseInfo)
+	if r.db == nil {
+		return out
+	}
+	rows, err := r.db.Query(`SELECT id, total, marked, updated_at FROM courses`)
+	if err != nil {
+		logger.Warnf("Failed to read download records: %v", err)
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id int
+		var c courseInfo
+		if err := rows.Scan(&id, &c.Total, &c.Marked, &c.UpdatedAt); err == nil {
+			out[id] = c
+		}
+	}
+	return out
+}
+
+// courseDir returns the folder name of a recorded course, empty if unknown
+func (r *recordStore) courseDir(courseID int) string {
+	if r.db == nil {
+		return ""
+	}
+	var dir, title string
+	if err := r.db.QueryRow(`SELECT dir, title FROM courses WHERE id = ?`, courseID).Scan(&dir, &title); err != nil {
+		return ""
+	}
+	if dir == "" {
+		dir = courseDirName(title)
+	}
+	return dir
 }
 
 // removeArticle deletes one downloaded article record

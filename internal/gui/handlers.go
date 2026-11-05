@@ -582,7 +582,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TaskID int64 `json:"taskId"`
+		TaskID   int64  `json:"taskId"`
+		CourseID int    `json:"courseId"` // a course of the download records
+		File     string `json:"file"`     // a file of that course, relative to its folder
 	}
 	if err := readJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
@@ -590,6 +592,23 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, _ := s.snapshotConfig()
 	dir := cfg.DownloadFolder
+	if req.CourseID > 0 {
+		p, ok := s.localPath(req.CourseID, req.File)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "没有该课程的下载记录")
+			return
+		}
+		if _, err := os.Stat(p); err != nil {
+			writeError(w, http.StatusNotFound, "本地文件不存在, 可点击「同步本地记录」校验")
+			return
+		}
+		if err := openPath(p); err != nil {
+			writeError(w, http.StatusInternalServerError, "打开失败: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"path": p})
+		return
+	}
 	if req.TaskID > 0 {
 		if d, ok := s.tasks.taskDir(req.TaskID); ok && d != "" {
 			if _, err := os.Stat(d); err == nil {

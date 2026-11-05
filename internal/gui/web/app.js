@@ -7,7 +7,7 @@
     set(k, v) { try { localStorage.setItem('gd.' + k, JSON.stringify(v)); } catch (_) { /* ignore */ } },
   };
 
-  const PAGE_SIZE = { explore: 24, mine: 24, course: 50, dl: 30 };
+  const PAGE_SIZE = { explore: 24, mine: 24, course: 50, dl: 30, local: 30 };
 
   // ---------- state ----------
   const S = {
@@ -37,7 +37,8 @@
     course: null, // {key, type, id, data, err, loading, sel:Set, q, page, from}
     tasks: [],
     tasksSig: '',
-    dl: { tab: store.get('dlTab', 'all'), q: '', page: 1, open: new Set(store.get('dlOpen', [])), groups: null },
+    dl: { tab: ((t) => (t === 'done' ? 'all' : t))(store.get('dlTab', 'all')), q: '', page: 1, open: new Set(store.get('dlOpen', [])), groups: null },
+    local: { data: null, err: '', loading: false, q: '', page: 1, open: new Set(store.get('localOpen', [])) },
     page: '',
   };
   if (S.ex.sort === 1) S.ex.sort = 101; // the official "最新" order was replaced by 最新上线
@@ -175,6 +176,7 @@
       case 'mine': S.lib.page = n; renderLibraryResults(); break;
       case 'course': if (S.course) { S.course.page = n; renderArticleList(); } break;
       case 'dl': S.dl.page = n; renderTaskList(true); break;
+      case 'local': S.local.page = n; renderLocalList(); break;
       default: return;
     }
     const anchor = document.getElementById('results-top');
@@ -605,7 +607,7 @@
     let page = parts[0];
     document.title = '极客时间下载器';
     if (page === 'library') page = 'explore';
-    if (!S.loggedIn && page !== 'settings') page = 'login';
+    if (!S.loggedIn && page !== 'settings' && page !== 'local') page = 'login';
     if (S.loggedIn && page === 'login') page = 'explore';
     const prev = S.page;
     S.page = page;
@@ -618,6 +620,7 @@
       case 'course': renderCourse(parts[1], parts[2]); break;
       case 'read': renderReader(parts[1], parts[2], parts[3]); break;
       case 'downloads': renderDownloads(); break;
+      case 'local': renderLocal(); break;
       case 'settings': renderSettings(); break;
       default: S.page = 'explore'; renderExplore(); break;
     }
@@ -1723,11 +1726,12 @@
   }
 
   // ---------- downloads ----------
+  // finished tasks are stored locally and shown on the local page
+  const isFinishedOK = (t) => t.status === 'done' || t.status === 'skipped';
   const TABS = [
     ['all', '全部', () => true],
     ['active', '进行中', (t) => t.status === 'running'],
     ['queued', '等待中', (t) => t.status === 'queued'],
-    ['done', '已完成', (t) => t.status === 'done' || t.status === 'skipped'],
     ['failed', '失败', (t) => t.status === 'failed'],
     ['canceled', '已取消', (t) => t.status === 'canceled'],
   ];
@@ -1758,8 +1762,7 @@
           <button class="btn btn-ghost btn-sm" data-action="dl-retry-failed">${icons.retry}重试失败</button>
           <button class="btn btn-ghost btn-sm btn-danger" data-action="dl-cancel-all">${icons.stop}全部取消</button>
           <span class="spacer"></span>
-          <button class="btn btn-ghost btn-sm" data-action="dl-sync" title="检查下载记录对应的文件是否仍在本地, 移除文件已不存在的记录">${icons.refresh}同步本地记录</button>
-          <button class="btn btn-ghost btn-sm" data-action="dl-clear">${icons.trash}清除已完成</button>
+          <button class="btn btn-ghost btn-sm" data-action="dl-clear" title="从本次的总进度中移除已完成的任务, 不影响本地文件">${icons.trash}清除已完成</button>
         </div>
         <div id="dl-list"></div>
         <div id="dl-pager"></div>
@@ -1773,11 +1776,13 @@
     const $list = document.getElementById('dl-list');
     if (!$list) return;
     const tasks = S.tasks;
-    const n = (f) => tasks.filter(f).length;
-    const st = { running: n((t) => t.status === 'running'), queued: n((t) => t.status === 'queued'), done: n((t) => t.status === 'done' || t.status === 'skipped'), failed: n((t) => t.status === 'failed') };
+    const pending = tasks.filter((t) => !isFinishedOK(t));
+    const n = (f) => pending.filter(f).length;
+    const st = { running: n((t) => t.status === 'running'), queued: n((t) => t.status === 'queued'), failed: n((t) => t.status === 'failed'), done: tasks.length - pending.length };
     document.getElementById('dl-stats').innerHTML = [
-      ['下载中', st.running, 'var(--info)'], ['等待中', st.queued, 'var(--muted)'], ['已完成', st.done, 'var(--success)'], ['失败', st.failed, 'var(--danger)'],
-    ].map(([k, v, c]) => `<div><div class="v">${v}</div><div class="k"><i style="background:${c}"></i>${k}</div></div>`).join('');
+      ['下载中', st.running, 'var(--info)'], ['等待中', st.queued, 'var(--muted)'], ['失败', st.failed, 'var(--danger)'],
+    ].map(([k, v, c]) => `<div><div class="v">${v}</div><div class="k"><i style="background:${c}"></i>${k}</div></div>`).join('') +
+      `<a class="stat-link" href="#/local"><div class="v">${st.done}</div><div class="k"><i style="background:var(--success)"></i>本次已完成 · 查看本地 →</div></a>`;
     const s = S.settings || {};
     document.getElementById('dl-sub').textContent =
       `同时 ${s.concurrentTasks || 1} 个任务 · 每个任务 ${s.threads || 1} 线程`;
@@ -1788,14 +1793,21 @@
 
     const filter = (TABS.find((t) => t[0] === S.dl.tab) || TABS[0])[2];
     const ql = S.dl.q.toLowerCase();
-    const all = tasks.filter(filter).filter((t) => !ql || (t.title + '\n' + t.courseTitle).toLowerCase().indexOf(ql) >= 0);
+    const all = pending.filter(filter).filter((t) => !ql || (t.title + '\n' + t.courseTitle).toLowerCase().indexOf(ql) >= 0);
 
+    // every task of a course, finished ones included, for the course summary
+    const byCourse = new Map();
+    for (const t of tasks) {
+      const key = t.typeKey + ':' + t.courseId;
+      if (!byCourse.has(key)) byCourse.set(key, []);
+      byCourse.get(key).push(t);
+    }
     // tasks of the same course are folded into one group, pages count groups
     const groups = new Map();
     for (const t of all) {
       const key = t.typeKey + ':' + t.courseId;
       let g = groups.get(key);
-      if (!g) groups.set(key, (g = { key, title: t.courseTitle, typeName: t.typeName, tasks: [] }));
+      if (!g) groups.set(key, (g = { key, title: t.courseTitle, typeName: t.typeName, tasks: [], all: byCourse.get(key) }));
       g.tasks.push(t);
     }
     S.dl.groups = groups;
@@ -1811,7 +1823,8 @@
     if ($pager.innerHTML !== pagerHtml && !$pager.contains(document.activeElement)) $pager.innerHTML = pagerHtml;
 
     if (!list.length) {
-      $list.innerHTML = `<div class="empty" style="border-top:0"><div class="glyph">閒</div><div class="title">${tasks.length ? '没有符合条件的任务' : '暂无下载任务'}</div><div>${tasks.length ? '' : '在书架上点击封面右上角的印章, 即可下载整套课程'}</div>${tasks.length ? '' : '<a class="btn btn-sm" href="#/explore">浏览全部课程</a>'}</div>`;
+      const any = pending.length > 0;
+      $list.innerHTML = `<div class="empty" style="border-top:0"><div class="glyph">閒</div><div class="title">${any ? '没有符合条件的任务' : '没有正在下载的任务'}</div><div>${any ? '' : (st.done ? `本次已完成 ${st.done} 个任务, 已保存到本地` : '在书架上点击封面右上角的印章, 即可下载整套课程')}</div>${any ? '' : (st.done ? '<a class="btn btn-sm" href="#/local">查看本地</a>' : '<a class="btn btn-sm" href="#/explore">浏览全部课程</a>')}</div>`;
       return;
     }
 
@@ -1983,7 +1996,7 @@
   function patchGroup(gel, g, open) {
     const head = gel.querySelector('.tgroup-head');
     const set = (sel, prop, v) => { const n = head.querySelector(sel); if (n[prop] !== v) n[prop] = v; };
-    const ts = g.tasks;
+    const ts = g.all || g.tasks;
     const cnt = (f) => ts.filter(f).length;
     const c = {
       running: cnt((t) => t.status === 'running'),
@@ -2023,7 +2036,7 @@
 
     const acts = head.querySelector('.task-actions');
     const canCancel = c.running + c.queued > 0;
-    const canRetry = ts.some((t) => t.status === 'failed' || t.status === 'canceled' || t.status === 'skipped');
+    const canRetry = g.tasks.some((t) => t.status === 'failed' || t.status === 'canceled');
     const sig = `${canCancel}:${canRetry}:${ts[0].id}`;
     if (acts.dataset.sig !== sig) {
       acts.dataset.sig = sig;
@@ -2031,7 +2044,7 @@
       const b = (action, icon, title, cls) => `<button class="ibtn ${cls || ''}" data-action="${action}" data-key="${key}" data-id="${ts[0].id}" title="${title}" aria-label="${title}">${icon}</button>`;
       let html = '';
       if (canCancel) html += b('dl-group-cancel', icons.stop, '取消本课程的任务', 'danger');
-      if (canRetry) html += b('dl-group-retry', icons.retry, '重试本课程失败 / 取消 / 跳过的任务', 'accent');
+      if (canRetry) html += b('dl-group-retry', icons.retry, '重试本课程失败 / 取消的任务', 'accent');
       html += b('task-open', icons.folder, '打开课程目录');
       html += b('dl-group-remove', icons.trash, '移除本课程的任务', 'danger');
       acts.innerHTML = html;
@@ -2106,6 +2119,7 @@
     try {
       const r = await api('POST', '/api/records/sync');
       S.marks = r.marks || {};
+      if (S.page === 'local') loadLocal();
       const x = r.result || {};
       let msg = x.removed
         ? `已校验 ${x.checked} 条下载记录, 移除 ${x.removed} 条本地文件已不存在的记录`
@@ -2127,6 +2141,169 @@
       const r = await api('POST', '/api/tasks/action', { action, ids: ids || [] });
       applyTasks(r.tasks || []);
     } catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ---------- local ----------
+  const FILE_KIND = { md: 'Markdown', pdf: 'PDF', mp3: '音频', ts: '视频' };
+  const fileExt = (p) => (p.match(/\.([a-z0-9]+)$/i) || ['', ''])[1].toLowerCase();
+  const fmtDate = (sec) => {
+    if (!sec) return '';
+    const d = new Date(sec * 1000);
+    const z = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+  };
+
+  function renderLocal() {
+    $view.innerHTML = `
+      <div class="page">
+        <div class="page-head">
+          <div>
+            <div class="kicker">Local</div>
+            <h1>本地</h1>
+            <div class="sub" id="lc-sub"></div>
+          </div>
+          <div class="head-actions">
+            <button class="btn btn-ghost btn-sm" data-action="open-root">${icons.folder}打开下载目录</button>
+          </div>
+        </div>
+        <div class="ledger-stats" id="lc-stats"></div>
+        <div class="ledger-tools" id="results-top">
+          <div class="sub">已保存到本地的课程和文章, 以下载记录为准</div>
+          <div class="search-sm">${icons.search}<input class="input" id="lc-q" placeholder="查找课程或文章" value="${esc(S.local.q)}"></div>
+        </div>
+        <div class="ledger-actions">
+          <button class="btn btn-ghost btn-sm" data-action="lc-refresh">${icons.refresh}刷新</button>
+          <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" data-action="dl-sync" title="检查下载记录对应的文件是否仍在本地, 移除文件已不存在的记录">${icons.check}同步本地记录</button>
+        </div>
+        <div id="lc-list"></div>
+        <div id="lc-pager"></div>
+      </div>`;
+    const q = document.getElementById('lc-q');
+    q.addEventListener('input', debounce(() => { S.local.q = q.value.trim(); S.local.page = 1; renderLocalList(); }, 100));
+    renderLocalList();
+    loadLocal();
+  }
+
+  async function loadLocal() {
+    if (S.local.loading) return;
+    S.local.loading = true;
+    try {
+      S.local.data = await api('GET', '/api/local');
+      S.local.err = '';
+    } catch (e) {
+      S.local.err = e.message;
+    }
+    S.local.loading = false;
+    if (S.page === 'local') renderLocalList();
+  }
+
+  function renderLocalList() {
+    const $list = document.getElementById('lc-list');
+    if (!$list) return;
+    const d = S.local.data;
+    if (!d) {
+      $list.innerHTML = S.local.err
+        ? `<div class="empty" style="border-top:0"><div class="title">读取本地记录失败</div><div>${esc(S.local.err)}</div></div>`
+        : '<div class="empty" style="border-top:0"><div>正在读取本地记录…</div></div>';
+      return;
+    }
+    const courses = d.courses || [];
+    let articles = 0;
+    let size = 0;
+    let legacy = 0;
+    for (const c of courses) {
+      articles += c.articles.length;
+      size += c.size;
+      legacy += c.articles.filter((a) => a.legacy).length;
+    }
+    document.getElementById('lc-sub').textContent = d.root || '';
+    document.getElementById('lc-stats').innerHTML = [
+      ['课程', courses.length, 'var(--accent)'], ['文章', articles, 'var(--success)'], ['占用空间', fmtBytes(size), 'var(--info)'], ['待校验的旧记录', legacy, 'var(--warn)'],
+    ].map(([k, v, c]) => `<div><div class="v">${v}</div><div class="k"><i style="background:${c}"></i>${k}</div></div>`).join('');
+
+    const ql = S.local.q.toLowerCase();
+    const match = (x) => !ql || String(x || '').toLowerCase().indexOf(ql) >= 0;
+    const list = [];
+    for (const c of courses) {
+      const arts = match(c.title) ? c.articles : c.articles.filter((a) => match(a.title));
+      if (arts.length) list.push({ c, arts });
+    }
+    const size2 = PAGE_SIZE.local;
+    S.local.page = clampPage(S.local.page, list.length, size2);
+    const page = list.slice((S.local.page - 1) * size2, S.local.page * size2);
+    const $pager = document.getElementById('lc-pager');
+    const pagerHtml = pager('local', S.local.page, list.length, size2);
+    if ($pager.innerHTML !== pagerHtml) $pager.innerHTML = pagerHtml;
+
+    if (!page.length) {
+      $list.innerHTML = `<div class="empty" style="border-top:0"><div class="glyph">空</div><div class="title">${courses.length ? '没有符合条件的课程' : '本地还没有下载记录'}</div><div>${courses.length ? '' : '下载完成的课程会显示在这里'}</div></div>`;
+      return;
+    }
+    $list.innerHTML = page.map(({ c, arts }) => localGroupHtml(c, arts, !!ql || S.local.open.has(String(c.id)))).join('');
+  }
+
+  function localGroupHtml(c, arts, open) {
+    const sub = [c.typeName, `已下载 ${c.articles.length}${c.total ? ' / ' + c.total : ''} 篇`];
+    if (c.size) sub.push(fmtBytes(c.size));
+    if (c.updatedAt) sub.push('更新于 ' + fmtDate(c.updatedAt));
+    const missing = c.articles.filter((a) => !a.legacy && a.files.length && !a.files.some((f) => f.exists)).length;
+    const legacy = c.articles.filter((a) => a.legacy).length;
+    let warn = '';
+    if (!c.exists) warn = '本地已找不到课程目录, 可点击「同步本地记录」校验';
+    else if (missing) warn = `${missing} 篇的文件已不在本地, 可点击「同步本地记录」校验`;
+    else if (legacy) warn = `${legacy} 篇是旧记录, 同步后显示标题和文件`;
+    const pct = c.total ? Math.min(100, (c.articles.length / c.total) * 100) : 100;
+    const b = (action, icon, title, extra) => `<button class="ibtn" data-action="${action}" data-cid="${c.id}" ${extra || ''} title="${title}" aria-label="${title}">${icon}</button>`;
+    let acts = '';
+    if (c.typeKey && c.typeKey !== 'a0') acts += `<a class="ibtn" href="#/course/${esc(c.typeKey)}/${c.id}" title="打开课程页" aria-label="打开课程页">${icons.open}</a>`;
+    if (c.exists) acts += b('lc-open', icons.folder, '打开课程目录');
+    const rows = open ? arts.map((a) => localArticleHtml(c, a)).join('') : '';
+    return `
+      <div class="tgroup ${open ? 'open' : ''}">
+        <div class="task tgroup-head" data-action="lc-toggle" data-cid="${c.id}" role="button" tabindex="0" aria-expanded="${open}">
+          <div class="task-glyph tgroup-chev">${icons.next}</div>
+          <div class="task-main">
+            <div class="task-title"><span class="t" title="${esc(c.title)}">${esc(c.title)}</span>${c.exists ? '' : '<span class="st failed">目录缺失</span>'}</div>
+            <div class="task-sub">${esc(sub.filter(Boolean).join(' · '))}</div>
+            ${warn ? `<div class="task-warn">${esc(warn)}</div>` : ''}
+            <div class="progress ${pct >= 100 ? 'done' : ''}"><i style="width:${pct}%"></i></div>
+          </div>
+          <div class="task-actions">${acts}</div>
+        </div>
+        <div class="tgroup-body" ${open ? '' : 'hidden'}>${rows}</div>
+      </div>`;
+  }
+
+  function localArticleHtml(c, a) {
+    const title = a.title || `文章 #${a.id}`;
+    let files;
+    if (a.legacy) files = '<span class="fchip muted">旧记录, 同步后显示文件</span>';
+    else if (!a.files.length) files = '<span class="fchip muted">无可下载内容</span>';
+    else files = a.files.map((f) => {
+      const ext = fileExt(f.path);
+      const label = (FILE_KIND[ext] || ext.toUpperCase() || '文件') + (f.exists ? ' · ' + fmtBytes(f.size) : ' · 已缺失');
+      return f.exists
+        ? `<button class="fchip" data-action="lc-open" data-cid="${c.id}" data-file="${esc(f.path)}" title="打开 ${esc(f.path)}">${esc(label)}</button>`
+        : `<span class="fchip missing" title="${esc(f.path)}">${esc(label)}</span>`;
+    }).join('');
+    const icon = a.files.some((f) => fileExt(f.path) === 'ts') ? icons.video : icons.doc;
+    return `
+      <div class="task">
+        <div class="task-glyph">${icon}</div>
+        <div class="task-main">
+          <div class="task-title"><span class="t" title="${esc(title)}">${esc(title)}</span></div>
+          <div class="fchips">${files}</div>
+        </div>
+        <div class="task-actions"><span class="task-time">${esc(fmtDate(a.finishedAt))}</span></div>
+      </div>`;
+  }
+
+  function toggleLocal(cid) {
+    if (S.local.open.has(cid)) S.local.open.delete(cid);
+    else S.local.open.add(cid);
+    store.set('localOpen', Array.from(S.local.open));
+    renderLocalList();
   }
 
   // ---------- settings ----------
@@ -2335,7 +2512,7 @@
     measureRates(tasks);
     const finished = tasks.filter((t) => t.status === 'done' || t.status === 'skipped').length;
     if (finished !== lastFinished) {
-      if (lastFinished >= 0) loadMarksSoon();
+      if (lastFinished >= 0) { loadMarksSoon(); if (S.page === 'local') loadLocal(); }
       lastFinished = finished;
     }
     const sig = JSON.stringify(tasks.map((t) => [t.id, t.status, t.done, t.total, t.bytes, t.stage, t.speed, t.error]));
@@ -2482,6 +2659,11 @@
         break;
       case 'dl-clear': taskAction('clearFinished'); break;
       case 'dl-sync': syncRecords(el); break;
+      case 'lc-refresh': loadLocal(); break;
+      case 'lc-toggle': toggleLocal(el.dataset.cid); break;
+      case 'lc-open':
+        try { await api('POST', '/api/open', { courseId: Number(el.dataset.cid), file: el.dataset.file || '' }); } catch (ex) { toast(ex.message, 'error'); }
+        break;
       case 'task-cancel': taskAction('cancel', [Number(id)]); break;
       case 'task-retry': taskAction('retry', [Number(id)]); break;
       case 'task-remove': taskAction('remove', [Number(id)]); break;
@@ -2492,7 +2674,7 @@
         break;
       }
       case 'dl-group-retry':
-        taskAction('retry', groupTaskIds(el.dataset.key, (t) => t.status === 'failed' || t.status === 'canceled' || t.status === 'skipped'));
+        taskAction('retry', groupTaskIds(el.dataset.key, (t) => t.status === 'failed' || t.status === 'canceled'));
         break;
       case 'dl-group-remove': {
         const ids = groupTaskIds(el.dataset.key, () => true);
