@@ -52,6 +52,7 @@ type Server struct {
 	catalogMeta *catalogMeta
 	introCache  map[string]introDTO
 	outline     outlineCache // public chapter outlines and article dates
+	catalogAll  catalogAll   // whole filtered catalog lists, for launch time sorting
 	courseCache map[string]geektime.Course
 
 	browserLogin sync.Mutex // one browser cookie import at a time

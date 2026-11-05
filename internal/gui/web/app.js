@@ -40,6 +40,7 @@
     dl: { tab: store.get('dlTab', 'all'), q: '', page: 1 },
     page: '',
   };
+  if (S.ex.sort === 1) S.ex.sort = 101; // the official "最新" order was replaced by 最新上线
 
   const $view = document.getElementById('view');
   const $badge = document.getElementById('nav-badge');
@@ -831,7 +832,8 @@
     html += facet('类型', opt(m.types), ex.type, 'ex-type', { disabled: dis });
     html += facet('形式', opt(m.forms), ex.form, 'ex-form', { disabled: dis });
     html += facet('会员', opt(m.pvips), ex.pvip, 'ex-pvip', { disabled: dis });
-    html += facet('排序', [{ title: '默认', value: 8 }, { title: '最热', value: 4 }, { title: '最新', value: 1 }], ex.sort, 'ex-sort', {
+    // 101 / 102: launch time order, sorted by the gui server over the whole filtered list
+    html += facet('排序', [{ title: '默认', value: 8 }, { title: '最热', value: 4 }, { title: '最新上线', value: 101 }, { title: '最早上线', value: 102 }], ex.sort, 'ex-sort', {
       disabled: dis,
       end: `<button class="text-link facet-end" data-action="ex-reset" ${dis ? 'disabled' : ''}>重置筛选</button>`,
     });
@@ -1364,7 +1366,7 @@
       ${facet('形式', [{ title: '全部', value: 'all' }, { title: '图文 / 音频', value: 'text' }, { title: '视频', value: 'video' }], S.lib.media, 'lib-media')}
       ${facet('状态', [{ title: '全部', value: 'all' }, { title: '已完结', value: 'finish' }, { title: '更新中', value: 'updating' }], S.lib.status, 'lib-status')}
       ${facet('下载', [{ title: '全部', value: 'all' }, { title: '已下载', value: 'done' }, { title: '部分下载', value: 'part' }, { title: '未下载', value: 'none' }], S.lib.dl, 'lib-dl')}
-      ${facet('排序', [{ title: '最近学习', value: 'recent' }, { title: '名称', value: 'title' }, { title: '课时最多', value: 'count' }], S.lib.sort, 'lib-sort', {
+      ${facet('排序', [{ title: '最近学习', value: 'recent' }, { title: '最新上线', value: 'launch' }, { title: '最早上线', value: 'launch-asc' }, { title: '名称', value: 'title' }, { title: '课时最多', value: 'count' }], S.lib.sort, 'lib-sort', {
         end: '<button class="text-link facet-end" data-action="reset-filters">重置筛选</button>',
       })}
       <div class="quick-open">
@@ -1398,7 +1400,12 @@
       }
       return true;
     });
-    if (sort === 'title') list = list.slice().sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
+    if (sort === 'launch' || sort === 'launch-asc') {
+      const t = (p) => p.beginTime || (S.dates.get(p.courseId) || {}).first || 0;
+      const dir = sort === 'launch' ? -1 : 1;
+      // unknown launch times last
+      list = list.slice().sort((a, b) => (!t(a) - !t(b)) || dir * (t(a) - t(b)) || a.order - b.order);
+    } else if (sort === 'title') list = list.slice().sort((a, b) => a.title.localeCompare(b.title, 'zh-CN'));
     else if (sort === 'count') list = list.slice().sort((a, b) => b.articleCount - a.articleCount);
     else list = list.slice().sort((a, b) => a.order - b.order);
     return list;

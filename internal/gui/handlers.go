@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nicoxiang/geektime-downloader/internal/config"
 	"github.com/nicoxiang/geektime-downloader/internal/geektime"
@@ -98,7 +99,7 @@ type productDTO struct {
 	TypeName     string `json:"typeName"`
 	IsVideo      bool   `json:"isVideo"`
 	IsFinish     bool   `json:"isFinish"`
-	BeginTime    int64  `json:"beginTime,omitempty"` // launch time, unix seconds
+	BeginTime    int64  `json:"beginTime,omitempty"` // launch time, unix seconds (creation time when unknown)
 	ArticleCount int    `json:"articleCount"`
 	Unit         string `json:"unit"`
 	Direct       bool   `json:"direct"`    // no article selection, download as one video
@@ -131,6 +132,12 @@ func toProductDTO(p response.LearnProduct, order int) productDTO {
 	}
 	if n, err := p.Article.Count.Int64(); err == nil {
 		dto.ArticleCount = int(n)
+	}
+	if dto.BeginTime == 0 || dto.BeginTime > time.Now().Add(30*24*time.Hour).Unix() {
+		// about 1/5 of the courses (mostly video / open courses) have no begin_time and a
+		// few carry a placeholder years ahead; the creation time is within days of the
+		// first lesson for most of them
+		dto.BeginTime = p.Ctime
 	}
 	classifyProduct(&dto, p.IsUniversity, p.University.ClassID)
 	dto.Claimable = !dto.Purchased && p.Price.SaleType == geektime.SaleTypeFreeClaim
@@ -256,6 +263,7 @@ func (s *Server) clearCache() {
 	defer s.cacheMu.Unlock()
 	s.products = nil
 	s.catalogMeta = nil
+	s.catalogAll.reset()
 	s.introCache = make(map[string]introDTO)
 	s.courseCache = make(map[string]geektime.Course)
 }

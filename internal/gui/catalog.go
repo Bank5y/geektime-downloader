@@ -138,7 +138,7 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := client.ProductList(geektime.CatalogQuery{
+	query := geektime.CatalogQuery{
 		TagID:       atoi("tag", 0),
 		ProductType: atoi("type", 0),
 		ProductForm: atoi("form", 0),
@@ -146,7 +146,28 @@ func (s *Server) handleCatalog(w http.ResponseWriter, r *http.Request) {
 		Sort:        atoi("sort", 8),
 		Page:        page,
 		Size:        size,
-	})
+	}
+	if isLaunchSort(query.Sort) {
+		all, err := s.collectCatalog(client, query)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		sorted := sortByLaunch(all, query.Sort == sortLaunchNewest)
+		out := catalogPageDTO{Page: page, Size: size, Total: len(sorted), Items: []productDTO{}}
+		if from := (page - 1) * size; from < len(sorted) {
+			to := from + size
+			if to > len(sorted) {
+				to = len(sorted)
+			}
+			out.Items = s.withLocal(sorted[from:to])
+			out.More = to < len(sorted)
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	res, err := client.ProductList(query)
 	if err != nil {
 		writeAPIError(w, err)
 		return
