@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS downloaded_articles (
 var recordColumns = []struct{ table, column, def string }{
 	{"courses", "type_key", "TEXT NOT NULL DEFAULT ''"}, // product type key used to open the course
 	{"courses", "dir", "TEXT NOT NULL DEFAULT ''"},      // course folder name in the download folder
+	{"courses", "root", "TEXT NOT NULL DEFAULT ''"},     // download folder used, empty: the current one
 	{"downloaded_articles", "title", "TEXT"},            // article title, NULL for old records
 	// json array of output files relative to the course folder; NULL for old
 	// records (unknown), [] when the article had nothing to download
@@ -169,6 +170,7 @@ type articleRecord struct {
 	ArticleID   int
 	Title       string
 	Files       []string // output files relative to the course folder
+	Root        string   // download folder the course folder is in
 }
 
 func (r *recordStore) addArticle(a articleRecord) {
@@ -182,9 +184,9 @@ func (r *recordStore) addArticle(a articleRecord) {
 		if err := upsertCourse(tx, a.CourseID, a.CourseTitle); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE courses SET updated_at = ?, dir = ?,
+		if _, err := tx.Exec(`UPDATE courses SET updated_at = ?, dir = ?, root = ?,
 			type_key = CASE WHEN ? <> '' THEN ? ELSE type_key END WHERE id = ?`,
-			now, courseDirName(a.CourseTitle), a.TypeKey, a.TypeKey, a.CourseID); err != nil {
+			now, courseDirName(a.CourseTitle), a.Root, a.TypeKey, a.TypeKey, a.CourseID); err != nil {
 			return err
 		}
 		_, err := tx.Exec(`INSERT INTO downloaded_articles (course_id, article_id, finished_at, title, files) VALUES (?, ?, ?, ?, ?)
@@ -279,6 +281,7 @@ type storedArticle struct {
 	CourseTitle string
 	TypeKey     string
 	Dir         string // course folder name
+	Root        string // download folder, empty: the current one
 	ArticleID   int
 	Title       string
 	FinishedAt  int64
@@ -291,7 +294,7 @@ func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
 	if r.db == nil {
 		return out, nil
 	}
-	rows, err := r.db.Query(`SELECT a.course_id, c.title, c.type_key, c.dir, a.article_id, COALESCE(a.title, ''), a.finished_at, a.files
+	rows, err := r.db.Query(`SELECT a.course_id, c.title, c.type_key, c.dir, c.root, a.article_id, COALESCE(a.title, ''), a.finished_at, a.files
 		FROM downloaded_articles a JOIN courses c ON c.id = a.course_id ORDER BY a.course_id, a.article_id`)
 	if err != nil {
 		return nil, err
@@ -300,7 +303,7 @@ func (r *recordStore) downloadedArticles() ([]storedArticle, error) {
 	for rows.Next() {
 		var a storedArticle
 		var files sql.NullString
-		if err := rows.Scan(&a.CourseID, &a.CourseTitle, &a.TypeKey, &a.Dir, &a.ArticleID, &a.Title, &a.FinishedAt, &files); err != nil {
+		if err := rows.Scan(&a.CourseID, &a.CourseTitle, &a.TypeKey, &a.Dir, &a.Root, &a.ArticleID, &a.Title, &a.FinishedAt, &files); err != nil {
 			return nil, err
 		}
 		if files.Valid {
@@ -346,19 +349,20 @@ func (r *recordStore) courseMeta() map[int]courseInfo {
 	return out
 }
 
-// courseDir returns the folder name of a recorded course, empty if unknown
-func (r *recordStore) courseDir(courseID int) string {
+// courseDir returns the download folder (empty: the current one) and the
+// folder name of a recorded course; dir is empty if the course is unknown
+func (r *recordStore) courseDir(courseID int) (root, dir string) {
 	if r.db == nil {
-		return ""
+		return "", ""
 	}
-	var dir, title string
-	if err := r.db.QueryRow(`SELECT dir, title FROM courses WHERE id = ?`, courseID).Scan(&dir, &title); err != nil {
-		return ""
+	var title string
+	if err := r.db.QueryRow(`SELECT root, dir, title FROM courses WHERE id = ?`, courseID).Scan(&root, &dir, &title); err != nil {
+		return "", ""
 	}
 	if dir == "" {
 		dir = courseDirName(title)
 	}
-	return dir
+	return root, dir
 }
 
 // removeArticle deletes one downloaded article record

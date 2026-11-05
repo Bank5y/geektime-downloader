@@ -213,6 +213,31 @@ func (s *Server) snapshotConfig() (config.AppConfig, Settings) {
 	return s.settings.apply(s.cfg), s.settings
 }
 
+// configWith builds an AppConfig from per task options; scheduling options
+// (concurrent tasks, interval) always come from the current settings
+func (s *Server) configWith(opts Settings) (config.AppConfig, Settings) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	opts.ConcurrentTasks = s.settings.ConcurrentTasks
+	opts.Interval = s.settings.Interval
+	return opts.apply(s.cfg), opts
+}
+
+// taskOptions validates download options confirmed for new tasks
+func (s *Server) taskOptions(opts *Settings) (*Settings, error) {
+	if opts == nil {
+		return nil, nil
+	}
+	_, st := s.configWith(*opts)
+	s.mu.RLock()
+	base := s.cfg
+	s.mu.RUnlock()
+	if err := st.validate(base); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

@@ -534,9 +534,163 @@
     location.hash = `#/course/${p.typeKey}/${p.courseId}`;
   }
 
-  function quickDownload(p) {
+  async function quickDownload(p) {
     if (!p.openable || !p.purchased) return;
-    enqueue(p.typeKey, p.courseId, [], p.title);
+    const r = await askDownloadOptions({ summary: `《${p.title}》`, ...contentKinds([p]) });
+    if (r) enqueue(p.typeKey, p.courseId, [], p.title, r.options);
+  }
+
+  // contentKinds tells which output options matter for the given courses
+  function contentKinds(list) {
+    let text = false;
+    let video = false;
+    for (const p of list) {
+      const camp = p.typeName === '训练营'; // video lessons and text articles
+      if (p.isVideo || p.direct || camp) video = true;
+      if ((!p.isVideo && !p.direct) || camp) text = true;
+    }
+    return { text, video };
+  }
+
+  // ---------- download options dialog ----------
+  // askDownloadOptions confirms download options before tasks are created.
+  // Only the folder and the format are shown, the rest is under 高级选项.
+  // Resolves to {options} or null when canceled.
+  function askDownloadOptions({ summary, text, video }) {
+    return new Promise((resolve) => {
+      const s = S.settings || {};
+      const out = s.columnOutputType || 0;
+      const maxT = (S.limits && S.limits.maxThreads) || 32;
+      const quality = (name) => `
+        <div class="seg" data-seg="${name}">
+          ${[['ld', '标清'], ['sd', '高清'], ['hd', '超清']].map(([v, l]) => `<button type="button" data-v="${v}" class="${s.quality === v ? 'active' : ''}">${l}</button>`).join('')}
+        </div>`;
+      const wrap = document.createElement('div');
+      wrap.className = 'dlg-wrap';
+      wrap.innerHTML = `
+        <div class="dlg-scrim" data-dlg="cancel"></div>
+        <form class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlg-title" novalidate>
+          <div class="dlg-head">
+            <div class="kicker">Download options</div>
+            <div class="drawer-title-row"><h2 id="dlg-title">下载选项</h2>
+              <button class="icon-btn" type="button" data-dlg="cancel" aria-label="关闭"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="drawer-summary">${esc(summary)}</div>
+          </div>
+          <div class="dlg-body">
+            <div class="frow">
+              <label class="fl" for="dlg-folder">下载目录</label>
+              <input class="input mono" id="dlg-folder" name="downloadFolder" value="${esc(s.downloadFolder)}" spellcheck="false">
+              <div class="hint">每门课程保存在以课程名命名的子目录中。</div>
+            </div>
+            ${text ? `<div class="frow">
+              <span class="fl">专栏输出格式</span>
+              <div class="inline">
+                <label class="check"><input type="checkbox" name="out" value="1" ${out & 1 ? 'checked' : ''}>PDF</label>
+                <label class="check"><input type="checkbox" name="out" value="2" ${out & 2 ? 'checked' : ''}>Markdown</label>
+                <label class="check"><input type="checkbox" name="out" value="4" ${out & 4 ? 'checked' : ''}>音频</label>
+              </div>
+            </div>` : ''}
+            ${video && !text ? `<div class="frow"><span class="fl">视频清晰度</span>${quality('quality')}</div>` : ''}
+            <details class="dlg-adv">
+              <summary>高级选项</summary>
+              <div class="dlg-adv-body">
+                ${video && text ? `<div class="frow"><span class="fl">视频清晰度</span>${quality('quality')}</div>` : ''}
+                <div class="frow">
+                  <label class="fl" for="dlg-threads">下载线程数</label>
+                  <div class="range"><input type="range" min="1" max="${maxT}" value="${s.threads}" data-link="dlg-threads" aria-label="下载线程数"><input class="input" id="dlg-threads" name="threads" type="number" min="1" max="${maxT}" value="${s.threads}"></div>
+                </div>
+                ${text ? `<div class="frow">
+                  <label class="fl" for="dlg-comments">评论</label>
+                  <select class="select" id="dlg-comments" name="downloadComments" style="width:220px">
+                    <option value="0" ${s.downloadComments === 0 ? 'selected' : ''}>不下载</option>
+                    <option value="1" ${s.downloadComments === 1 ? 'selected' : ''}>下载首页评论</option>
+                    <option value="2" ${s.downloadComments === 2 ? 'selected' : ''}>下载所有评论</option>
+                  </select>
+                </div>
+                <div class="frow" data-pdf ${out & 1 ? '' : 'hidden'}>
+                  <label class="fl" for="dlg-wait">PDF 等待 / 超时 (秒)</label>
+                  <div class="inline" style="gap:10px">
+                    <input class="input mono" id="dlg-wait" name="printPDFWaitSeconds" type="number" min="0" max="60" value="${s.printPDFWaitSeconds}" style="width:90px">
+                    <span style="color:var(--muted)">/</span>
+                    <input class="input mono" name="printPDFTimeoutSeconds" type="number" min="1" max="120" value="${s.printPDFTimeoutSeconds}" style="width:90px" aria-label="PDF 超时">
+                  </div>
+                </div>` : ''}
+                <div class="frow" style="display:flex;flex-direction:column;gap:12px">
+                  <label class="check"><input type="checkbox" name="overwrite" ${s.overwrite ? 'checked' : ''}>覆盖已存在的文件</label>
+                  ${text ? `<label class="check"><input type="checkbox" name="skipEmbedVideo" ${s.skipEmbedVideo ? 'checked' : ''}>跳过图文课程中嵌入的视频</label>` : ''}
+                </div>
+                <div class="modal-note">同时下载任务数、任务间隔是全局设置, 请在「设置」中修改。</div>
+              </div>
+            </details>
+          </div>
+          <div class="dlg-foot">
+            <label class="check"><input type="checkbox" name="remember">保存为默认设置</label>
+            <div class="head-actions">
+              <button class="btn btn-ghost" type="button" data-dlg="cancel">取消</button>
+              <button class="btn btn-primary" type="submit">${icons.download}开始下载</button>
+            </div>
+          </div>
+        </form>`;
+      document.body.appendChild(wrap);
+      const form = wrap.querySelector('form');
+      const prevFocus = document.activeElement;
+
+      const close = (value) => {
+        document.removeEventListener('keydown', onKey, true);
+        wrap.classList.add('closing');
+        setTimeout(() => wrap.remove(), 160);
+        if (prevFocus && prevFocus.focus) prevFocus.focus();
+        resolve(value);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
+      document.addEventListener('keydown', onKey, true);
+      wrap.addEventListener('click', (e) => {
+        const c = e.target.closest('[data-dlg=cancel]');
+        if (c) { e.stopPropagation(); close(null); }
+        const b = e.target.closest('.seg button[data-v]');
+        if (b) b.parentNode.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+      });
+      form.querySelectorAll('[data-link]').forEach((r) => {
+        const num = document.getElementById(r.dataset.link);
+        r.addEventListener('input', () => { num.value = r.value; });
+        num.addEventListener('input', () => { r.value = num.value; });
+      });
+      const pdfRow = form.querySelector('[data-pdf]');
+      const pdfBox = form.querySelector('input[name=out][value="1"]');
+      if (pdfRow && pdfBox) pdfBox.addEventListener('change', () => { pdfRow.hidden = !pdfBox.checked; });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const folder = form.downloadFolder.value.trim();
+        if (!folder) { toast('请填写下载目录', 'error'); form.downloadFolder.focus(); return; }
+        let outType = out;
+        if (text) {
+          outType = 0;
+          form.querySelectorAll('input[name=out]:checked').forEach((c) => { outType |= Number(c.value); });
+          if (!outType) { toast('请至少选择一种专栏输出格式', 'error'); return; }
+        }
+        const seg = form.querySelector('[data-seg=quality] .active');
+        const num = (name, d) => (form[name] ? Number(form[name].value) : d);
+        const options = Object.assign({}, s, {
+          downloadFolder: folder,
+          columnOutputType: outType,
+          quality: seg ? seg.dataset.v : s.quality,
+          threads: num('threads', s.threads),
+          downloadComments: num('downloadComments', s.downloadComments),
+          printPDFWaitSeconds: num('printPDFWaitSeconds', s.printPDFWaitSeconds),
+          printPDFTimeoutSeconds: num('printPDFTimeoutSeconds', s.printPDFTimeoutSeconds),
+          overwrite: form.overwrite.checked,
+          skipEmbedVideo: form.skipEmbedVideo ? form.skipEmbedVideo.checked : s.skipEmbedVideo,
+        });
+        if (form.remember.checked) {
+          try {
+            S.settings = await api('PUT', '/api/settings', options);
+          } catch (ex) { toast(ex.message, 'error'); return; }
+        }
+        close({ options });
+      });
+      setTimeout(() => { const f = form.querySelector('button[type=submit]'); if (f) f.focus(); }, 0);
+    });
   }
 
   // facet row of text filters
@@ -557,13 +711,13 @@
   }
 
   const pendingEnqueue = new Set();
-  async function enqueue(type, courseId, articleIds, title) {
+  async function enqueue(type, courseId, articleIds, title, options) {
     const key = type + ':' + courseId + ':' + (articleIds || []).join(',');
     if (pendingEnqueue.has(key)) return false;
     pendingEnqueue.add(key);
     if (title && !(articleIds && articleIds.length)) toast(`正在获取《${title}》的目录…`);
     try {
-      const r = await api('POST', '/api/tasks', { type, courseId: Number(courseId), articleIds: articleIds || [] });
+      const r = await api('POST', '/api/tasks', { type, courseId: Number(courseId), articleIds: articleIds || [], options: options || undefined });
       if (r.added > 0) {
         toast((title ? `《${title}》` : '') + `已加入 ${r.added} 个下载任务`, 'success');
       } else {
@@ -1293,6 +1447,9 @@
     if (!b || b.running) return;
     if (b.kind === 'unlock') { startUnlockBatch(); return; }
     const items = b.items.filter((it) => it.on && pickable(it.p));
+    if (!items.length) return;
+    const confirmed = await askDownloadOptions({ summary: `批量下载 ${items.length} 门课程`, ...contentKinds(items.map((it) => it.p)) });
+    if (!confirmed || S.batch !== b || b.running) return;
     b.running = true;
     b.stop = false;
     renderDrawer(true);
@@ -1307,7 +1464,7 @@
       renderDrawer(false);
       try {
         const overwrite = b.mode === 'redo' && !!markInfo(p);
-        const r = await api('POST', '/api/tasks', { type: p.typeKey, courseId: Number(p.courseId), articleIds: [], overwrite });
+        const r = await api('POST', '/api/tasks', { type: p.typeKey, courseId: Number(p.courseId), articleIds: [], overwrite, options: confirmed.options });
         tasks += r.added || 0;
         ok++;
       } catch (e) {
@@ -2372,7 +2529,7 @@
                 <option value="1" ${s.downloadComments === 1 ? 'selected' : ''}>下载首页评论</option>
                 <option value="2" ${s.downloadComments === 2 ? 'selected' : ''}>下载所有评论</option>
               </select>
-              <div class="hint">仅对 PDF 生效。</div>
+              <div class="hint">对 PDF 与 Markdown 生效。</div>
             </div>
             <div class="frow">
               <label class="fl" for="s-wait">PDF 等待 / 超时 (秒)</label>

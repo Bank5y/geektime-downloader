@@ -644,6 +644,32 @@ a.ibtn { display: inline-flex; align-items: center; justify-content: center; }
 .radio input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 .modal-note { color: var(--muted); font-size: 12px; }
 
+/* download options dialog */
+.dlg-wrap { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.dlg-scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--text) 40%, transparent); animation: fade .2s ease-out; }
+.dlg {
+  position: relative; width: min(560px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column;
+  background: var(--bg); border-top: 3px solid var(--accent); border-radius: var(--radius); box-shadow: 0 18px 50px rgba(0,0,0,.18);
+  animation: rise .2s ease-out;
+}
+.dlg-wrap.closing .dlg, .dlg-wrap.closing .dlg-scrim { opacity: 0; transition: opacity .15s; }
+.dlg-head { padding: 22px 26px 6px; }
+.dlg-body { padding: 8px 26px 4px; overflow: auto; overscroll-behavior: contain; }
+.dlg-body .frow { padding: 12px 0; }
+.dlg-body .input.mono { width: 100%; font-family: var(--mono); font-size: 13px; }
+.dlg-adv { border-top: 1px solid var(--rule); margin-top: 6px; }
+.dlg-adv > summary { cursor: pointer; padding: 14px 0; color: var(--text-2); font-size: 13px; list-style: none; display: flex; align-items: center; gap: 8px; user-select: none; }
+.dlg-adv > summary::-webkit-details-marker { display: none; }
+.dlg-adv > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; display: inline-block; }
+.dlg-adv[open] > summary::before { transform: rotate(90deg); }
+.dlg-adv > summary:hover { color: var(--accent); }
+.dlg-adv-body { padding-bottom: 8px; }
+.dlg-adv-body .frow:first-child { padding-top: 0; }
+.dlg-foot { padding: 14px 26px 20px; border-top: 1.5px solid var(--text); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 560px) {
+  .dlg-head, .dlg-body, .dlg-foot { padding-left: 16px; padding-right: 16px; }
+}
+
 /* ---------- course intro ---------- */
 .colophon .subtitle { font-family: var(--serif); color: var(--text-2); font-size: 15px; margin: -6px 0 18px; line-height: 1.6; }
 .toc-tabs { display: flex; gap: 26px; flex: 1; min-width: 160px; }

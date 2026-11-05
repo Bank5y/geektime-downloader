@@ -62,7 +62,7 @@ func (s *Server) syncRecords(client *geektime.Client) (syncResult, error) {
 		if len(a.Files) == 0 {
 			continue // nothing was downloaded for it (no content), nothing to check
 		}
-		courseDir := filepath.Join(cfg.DownloadFolder, a.Dir)
+		courseDir := filepath.Join(rootOf(a, cfg.DownloadFolder), a.Dir)
 		existing := existingFiles(courseDir, a.Files)
 		switch {
 		case len(existing) == 0:
@@ -79,6 +79,14 @@ func (s *Server) syncRecords(client *geektime.Client) (syncResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// rootOf is the download folder of a recorded course
+func rootOf(a storedArticle, current string) string {
+	if a.Root != "" {
+		return a.Root
+	}
+	return current
 }
 
 // existingFiles returns the files (relative to dir) that still exist
@@ -108,7 +116,7 @@ func (s *Server) backfillLegacy(client *geektime.Client, root string, legacy []s
 	for _, id := range order {
 		arts := byCourse[id]
 		first := arts[0]
-		courseDir := filepath.Join(root, first.Dir)
+		courseDir := filepath.Join(rootOf(first, root), first.Dir)
 		if _, err := os.Stat(courseDir); err != nil {
 			// the whole course folder is gone, no need to know the titles
 			for _, a := range arts {

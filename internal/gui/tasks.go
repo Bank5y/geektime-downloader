@@ -71,8 +71,9 @@ type Task struct {
 	dir        string
 	cancel     context.CancelFunc
 	removed    bool
-	overwrite  bool     // re-download even if files exist
-	files      []string // output files reported by this run
+	overwrite  bool      // re-download even if files exist
+	files      []string  // output files reported by this run
+	settings   *Settings // options confirmed when the task was created, nil uses current settings
 	lastBytes  int64
 	lastTick   time.Time
 	lastUpdate time.Time
@@ -123,6 +124,7 @@ func (m *TaskManager) add(tasks []*Task) int {
 			existing.reset()
 			existing.removed = false
 			existing.overwrite = t.overwrite
+			existing.settings = t.settings
 			added++
 			continue
 		}
@@ -330,6 +332,7 @@ func (m *TaskManager) run(ctx context.Context, t *Task) {
 			ArticleID:   t.ArticleID,
 			Title:       t.Title,
 			Files:       relativeFiles(t.dir, t.files),
+			Root:        filepath.Dir(t.dir),
 		}
 		m.mu.Unlock()
 		m.srv.records.addArticle(rec)
@@ -370,6 +373,9 @@ func (m *TaskManager) execute(ctx context.Context, t *Task) (skipped bool, err e
 		return false, errors.New("未登录")
 	}
 	cfg, st := m.srv.snapshotConfig()
+	if t.settings != nil {
+		cfg, st = m.srv.configWith(*t.settings)
+	}
 	overwrite := st.Overwrite || t.overwrite
 
 	m.mu.Lock()

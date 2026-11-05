@@ -31,6 +31,7 @@ type localCourseDTO struct {
 	TypeKey   string            `json:"typeKey"`
 	TypeName  string            `json:"typeName"`
 	Dir       string            `json:"dir"`
+	Root      string            `json:"root"`   // download folder the course is in
 	Exists    bool              `json:"exists"` // course folder exists
 	Total     int               `json:"total"`
 	Marked    bool              `json:"marked"`
@@ -57,7 +58,8 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 			c = &localCourseDTO{ID: a.CourseID, Title: a.CourseTitle, TypeKey: a.TypeKey, Dir: a.Dir,
 				Total: m.Total, Marked: m.Marked, UpdatedAt: m.UpdatedAt, Articles: []localArticleDTO{}}
 			c.TypeName = typeNameOf(a.TypeKey)
-			if st, err := os.Stat(filepath.Join(cfg.DownloadFolder, a.Dir)); err == nil && st.IsDir() {
+			c.Root = rootOf(a, cfg.DownloadFolder)
+			if st, err := os.Stat(filepath.Join(c.Root, a.Dir)); err == nil && st.IsDir() {
 				c.Exists = true
 			}
 			courses[a.CourseID] = c
@@ -66,7 +68,7 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 		art := localArticleDTO{ID: a.ArticleID, Title: a.Title, FinishedAt: a.FinishedAt, Legacy: a.Files == nil, Files: []localFileDTO{}}
 		for _, f := range a.Files {
 			fd := localFileDTO{Path: f}
-			if st, err := os.Stat(filepath.Join(cfg.DownloadFolder, a.Dir, filepath.FromSlash(f))); err == nil {
+			if st, err := os.Stat(filepath.Join(c.Root, a.Dir, filepath.FromSlash(f))); err == nil {
 				fd.Exists, fd.Size = true, st.Size()
 				c.Size += st.Size()
 			}
@@ -107,11 +109,14 @@ func typeNameOf(key string) string {
 // in the download records; it never leaves the download folder
 func (s *Server) localPath(courseID int, file string) (string, bool) {
 	cfg, _ := s.snapshotConfig()
-	dir := s.records.courseDir(courseID)
+	root, dir := s.records.courseDir(courseID)
 	if dir == "" {
 		return "", false
 	}
-	root := filepath.Clean(cfg.DownloadFolder)
+	if root == "" {
+		root = cfg.DownloadFolder
+	}
+	root = filepath.Clean(root)
 	p := filepath.Join(root, dir)
 	if file != "" {
 		p = filepath.Join(p, filepath.FromSlash(file))

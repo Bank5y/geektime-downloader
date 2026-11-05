@@ -426,13 +426,19 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Type       string `json:"type"`
-		CourseID   int    `json:"courseId"`
-		ArticleIDs []int  `json:"articleIds"`
-		Overwrite  bool   `json:"overwrite"`
+		Type       string    `json:"type"`
+		CourseID   int       `json:"courseId"`
+		ArticleIDs []int     `json:"articleIds"`
+		Overwrite  bool      `json:"overwrite"`
+		Options    *Settings `json:"options"` // download options confirmed in the dialog
 	}
 	if err := readJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	opts, err := s.taskOptions(req.Options)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	option, ok := productTypeByKey(req.Type)
@@ -446,7 +452,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !option.NeedSelectArticle {
-		s.createProductTask(w, client, option, req.Type, req.CourseID, req.Overwrite)
+		s.createProductTask(w, client, option, req.Type, req.CourseID, req.Overwrite, opts)
 		return
 	}
 
@@ -482,6 +488,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 			option:      option,
 			article:     a,
 			overwrite:   req.Overwrite,
+			settings:    opts,
 		})
 	}
 	s.records.setTotal(c.ID, c.Title, len(c.Articles), true)
@@ -494,7 +501,7 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 // createProductTask handles 每日一课 / 大厂案例: the id is a product id and it contains one video
-func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Client, option ui.ProductTypeSelectOption, typeKey string, id int, overwrite bool) {
+func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Client, option ui.ProductTypeSelectOption, typeKey string, id int, overwrite bool, opts *Settings) {
 	info, err := client.ProductInfo(id)
 	if err != nil {
 		writeAPIError(w, err)
@@ -520,6 +527,7 @@ func (s *Server) createProductTask(w http.ResponseWriter, client *geektime.Clien
 		kind:        kindProduct,
 		option:      option,
 		overwrite:   overwrite,
+		settings:    opts,
 	}})
 	s.records.setTotal(id, title, 1, true)
 	writeJSON(w, http.StatusOK, map[string]int{"added": added, "requested": 1})
