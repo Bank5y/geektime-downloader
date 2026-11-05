@@ -7,7 +7,12 @@ import (
 	"github.com/nicoxiang/geektime-downloader/internal/config"
 )
 
-const maxConcurrentTasks = 8
+const (
+	maxConcurrentTasks     = 8
+	defaultConcurrentTasks = 3
+	// DefaultColumnOutputType is the GUI default output: markdown + audio
+	DefaultColumnOutputType = 2 | 4
+)
 
 // Settings are the download options editable in the GUI
 type Settings struct {
@@ -35,8 +40,8 @@ func settingsFromConfig(cfg config.AppConfig) Settings {
 		Interval:               cfg.Interval,
 		SkipEmbedVideo:         cfg.SkipEmbedVideo,
 		Threads:                cfg.Threads,
-		ConcurrentTasks:        1,
-		Overwrite:              false,
+		ConcurrentTasks:        defaultConcurrentTasks,
+		Overwrite:              true,
 	}
 }
 

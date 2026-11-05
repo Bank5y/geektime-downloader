@@ -16,6 +16,10 @@ func init() {
 	guiCmd.Flags().BoolVar(&noBrowser, "no-browser", false, "启动后不自动打开浏览器")
 	guiCmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		guiOpts.OpenBrowser = !noBrowser
+		// the GUI defaults to markdown + audio unless --output is given explicitly
+		if !cmd.Flags().Changed("output") {
+			cfg.ColumnOutputType = gui.DefaultColumnOutputType
+		}
 		logger.Init(cfg.LogLevel)
 		// cookies are optional here, they can be entered in the GUI
 		return config.ValidateOptions(&cfg)
