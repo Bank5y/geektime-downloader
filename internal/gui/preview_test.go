@@ -8,7 +8,7 @@ import (
 
 func TestGroupOutline(t *testing.T) {
 	p := groupOutline(
-		[]string{"a", "b", "c", "d"},
+		[]previewArticle{{1, "a"}, {2, "b"}, {3, "c"}, {4, "d"}},
 		[]string{"二", "一", "二", "其他"},
 		[]string{"一", "二", "空章"},
 	)
@@ -18,7 +18,7 @@ func TestGroupOutline(t *testing.T) {
 	if p.Chapters[0].Title != "一" || p.Chapters[1].Title != "二" || p.Chapters[1].Count != 2 || p.Chapters[2].Title != "其他" {
 		t.Fatalf("order / grouping: %+v", p.Chapters)
 	}
-	if u := groupOutline([]string{"x", "y"}, []string{"", ""}, nil); len(u.Chapters) != 1 || u.Chapters[0].Title != "" || u.Chapters[0].Count != 2 {
+	if u := groupOutline([]previewArticle{{1, "x"}, {2, "y"}}, []string{"", ""}, nil); len(u.Chapters) != 1 || u.Chapters[0].Title != "" || u.Chapters[0].Count != 2 {
 		t.Fatalf("untitled group: %+v", u)
 	}
 }
@@ -31,7 +31,7 @@ func TestCoursePreview(t *testing.T) {
 	if code := get("/api/course/preview?type=n0&id=7", &p); code != http.StatusOK {
 		t.Fatalf("preview: %d", code)
 	}
-	if p.Total != 3 || len(p.Chapters) != 2 || p.Chapters[1].Title != "正文" || len(p.Chapters[1].Articles) != 2 || p.First != 100 || p.Last != 300 {
+	if p.Total != 3 || len(p.Chapters) != 2 || p.Chapters[1].Title != "正文" || len(p.Chapters[1].Articles) != 2 || p.Chapters[1].Articles[1] != (previewArticle{3, "第二讲"}) || p.First != 100 || p.Last != 300 {
 		t.Fatalf("unexpected preview: %+v", p)
 	}
 	// single video products have no outline and need no upstream call

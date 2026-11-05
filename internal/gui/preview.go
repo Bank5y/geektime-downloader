@@ -4,14 +4,22 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/nicoxiang/geektime-downloader/internal/geektime"
+	"github.com/nicoxiang/geektime-downloader/internal/ui"
 )
 
 const maxOutline = 500 // articles fetched for a preview
 
+type previewArticle struct {
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+}
+
 type previewChapter struct {
-	Title    string   `json:"title"`
-	Count    int      `json:"count"`
-	Articles []string `json:"articles"`
+	Title    string           `json:"title"`
+	Count    int              `json:"count"`
+	Articles []previewArticle `json:"articles"`
 }
 
 type previewDTO struct {
@@ -57,10 +65,24 @@ func (s *Server) handleCoursePreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "参数错误")
 		return
 	}
+	p, status, err := s.coursePreview(client, option, typeKey, id)
+	if err != nil {
+		if status != 0 {
+			writeError(w, status, err.Error())
+		} else {
+			writeAPIError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// coursePreview builds (or returns the cached) chapter outline of a course. A non-zero
+// status is the http status to report, otherwise err is an api error.
+func (s *Server) coursePreview(client *geektime.Client, option ui.ProductTypeSelectOption, typeKey string, id int) (previewDTO, int, error) {
 	key := typeKey + ":" + strconv.Itoa(id)
 	if p, ok := s.outline.getPreview(key); ok {
-		writeJSON(w, http.StatusOK, p)
-		return
+		return p, 0, nil
 	}
 
 	var p previewDTO
@@ -71,13 +93,12 @@ func (s *Server) handleCoursePreview(w http.ResponseWriter, r *http.Request) {
 			if status == 0 {
 				status = http.StatusBadGateway
 			}
-			writeError(w, status, err.Error())
-			return
+			return previewDTO{}, status, err
 		}
-		titles := make([]string, len(c.Articles))
+		titles := make([]previewArticle, len(c.Articles))
 		chapters := make([]string, len(c.Articles))
 		for i, a := range c.Articles {
-			titles[i], chapters[i] = a.Title, a.Chapter
+			titles[i], chapters[i] = previewArticle{a.AID, a.Title}, a.Chapter
 		}
 		p = groupOutline(titles, chapters, nil)
 	case !option.NeedSelectArticle:
@@ -85,13 +106,11 @@ func (s *Server) handleCoursePreview(w http.ResponseWriter, r *http.Request) {
 	default:
 		chapters, err := client.Chapters(id)
 		if err != nil {
-			writeAPIError(w, err)
-			return
+			return previewDTO{}, 0, err
 		}
 		arts, total, err := client.ArticleOutline(id, maxOutline, false)
 		if err != nil {
-			writeAPIError(w, err)
-			return
+			return previewDTO{}, 0, err
 		}
 		names := make(map[string]string, len(chapters))
 		var order []string
@@ -99,10 +118,10 @@ func (s *Server) handleCoursePreview(w http.ResponseWriter, r *http.Request) {
 			names[ch.ID] = ch.Title
 			order = append(order, ch.Title)
 		}
-		titles := make([]string, len(arts))
+		titles := make([]previewArticle, len(arts))
 		groups := make([]string, len(arts))
 		for i, a := range arts {
-			titles[i] = a.Title
+			titles[i] = previewArticle{a.ID, a.Title}
 			if n, ok := names[a.ChapterID]; ok {
 				groups[i] = n
 			} else if len(chapters) > 0 {
@@ -133,12 +152,12 @@ func (s *Server) handleCoursePreview(w http.ResponseWriter, r *http.Request) {
 		p.Chapters = []previewChapter{}
 	}
 	s.outline.putPreview(key, p)
-	writeJSON(w, http.StatusOK, p)
+	return p, 0, nil
 }
 
 // groupOutline groups article titles by chapter, keeping chapter order (order first,
 // then first appearance); articles with an empty chapter form one untitled group
-func groupOutline(titles, chapters []string, order []string) previewDTO {
+func groupOutline(titles []previewArticle, chapters []string, order []string) previewDTO {
 	idx := make(map[string]int)
 	var out []previewChapter
 	add := func(name string) int {

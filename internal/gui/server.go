@@ -161,6 +161,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/course/intro", s.handleCourseIntro)
 	mux.HandleFunc("GET /api/course/dates", s.handleCourseDates)
 	mux.HandleFunc("GET /api/course/preview", s.handleCoursePreview)
+	mux.HandleFunc("GET /api/article", s.handleArticle)
 	mux.HandleFunc("GET /api/marks", s.handleMarks)
 	mux.HandleFunc("POST /api/unlock", s.handleUnlock)
 	mux.HandleFunc("POST /api/marks", s.handleSetMark)

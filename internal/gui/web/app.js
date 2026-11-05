@@ -113,6 +113,7 @@
     open: '<svg viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5H5V6h5"/></svg>',
     lock: '<svg viewBox="0 0 24 24"><rect x="5.5" y="11" width="13" height="9" rx="1.5"/><path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3"/></svg>',
     prev: '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>',
+    eye: '<svg viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
     check: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     key: '<svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2.5 2.5M14 9l2 2"/></svg>',
     pick: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12l3 3 5-6"/></svg>',
@@ -351,12 +352,12 @@
       const head = named ? `<div class="peek-ch"><span class="no">${pad(ci + 1)}</span><span class="t">${esc(c.title || '未分章节')}</span><span class="n">${c.count}</span></div>` : '';
       const items = c.articles.map((a) => {
         n++;
-        return `<div class="peek-a" title="${esc(a)}"><span class="i">${pad(n)}</span><span class="t">${esc(a)}</span></div>`;
+        return `<a class="peek-a" href="#/read/${p.typeKey}/${p.courseId}/${a.id}" title="预览《${esc(a.title)}》"><span class="i">${pad(n)}</span><span class="t">${esc(a.title)}</span><span class="go">预览</span></a>`;
       }).join('');
       return `<section>${head}${items}</section>`;
     }).join('');
     const planned = p.articleCount > d.total ? `已更新 ${d.total} / ${p.articleCount} 讲` : `共 ${d.total} 讲`;
-    return `<div class="peek-list">${html}</div><div class="peek-foot">${named ? d.chapters.length + ' 章 · ' : ''}${planned}<span>点击封面查看课程</span></div>`;
+    return `<div class="peek-list">${html}</div><div class="peek-foot">${named ? d.chapters.length + ' 章 · ' : ''}${planned}<span>点击篇目预览正文</span></div>`;
   }
 
   function peekHtml(p, d) {
@@ -578,7 +579,7 @@
 
   // ---------- chrome ----------
   function updateChrome() {
-    const nav = S.page === 'course' ? (S.course && S.course.from) || 'explore' : S.page;
+    const nav = S.page === 'course' ? (S.course && S.course.from) || 'explore' : (S.page === 'read' ? lastListPage : S.page);
     document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === nav));
     $logout.hidden = !S.loggedIn;
     const active = S.tasks.filter(isActive).length;
@@ -602,6 +603,7 @@
     }
     const parts = parseRoute();
     let page = parts[0];
+    document.title = '极客时间下载器';
     if (page === 'library') page = 'explore';
     if (!S.loggedIn && page !== 'settings') page = 'login';
     if (S.loggedIn && page === 'login') page = 'explore';
@@ -614,6 +616,7 @@
       case 'login': renderLogin(); break;
       case 'mine': renderLibrary(); break;
       case 'course': renderCourse(parts[1], parts[2]); break;
+      case 'read': renderReader(parts[1], parts[2], parts[3]); break;
       case 'downloads': renderDownloads(); break;
       case 'settings': renderSettings(); break;
       default: S.page = 'explore'; renderExplore(); break;
@@ -1684,6 +1687,7 @@
             <span class="e-lead"></span>
             <span class="e-act">
               <span data-st="${a.id}">${statusHtml(t) || (c.done.has(a.id) ? '<span class="st done">已下载</span>' : '')}</span>
+              <a class="ibtn" title="预览正文" href="#/read/${c.type}/${c.data.id}/${a.id}">${icons.eye}</a>
               <button class="ibtn accent" title="下载此篇" data-action="course-download-one" data-aid="${a.id}">${icons.download}</button>
             </span>
           </div>`;
@@ -2002,6 +2006,80 @@
     });
   }
 
+  // ---------- reader ----------
+  const readerCache = new Map(); // type:course:id -> article
+  let readerSeq = 0;
+
+  function readerCourseTitle(type, cid) {
+    const p = courseIndex.get(type + ':' + cid);
+    if (p) return p.title;
+    if (S.course && S.course.key === type + ':' + cid && S.course.data) return S.course.data.title;
+    return '';
+  }
+
+  function fetchArticle(type, cid, id) {
+    const k = type + ':' + cid + ':' + id;
+    if (readerCache.has(k)) return Promise.resolve(readerCache.get(k));
+    return api('GET', `/api/article?type=${encodeURIComponent(type)}&course=${encodeURIComponent(cid)}&id=${encodeURIComponent(id)}`).then((d) => {
+      readerCache.set(k, d);
+      if (readerCache.size > 40) readerCache.delete(readerCache.keys().next().value);
+      return d;
+    });
+  }
+
+  function readerNavHtml(type, cid, d) {
+    const card = (ref, dir) => ref
+      ? `<a class="rn ${dir}" href="#/read/${type}/${cid}/${ref.id}"><span class="lbl">${dir === 'prev' ? icons.prev + '上一讲' : '下一讲' + icons.next}</span><span class="t">${esc(ref.title)}</span></a>`
+      : `<span class="rn ${dir} none"><span class="lbl">${dir === 'prev' ? '已是第一讲' : '已是最后一讲'}</span></span>`;
+    return `<nav class="reader-nav" aria-label="翻页">${card(d.prev, 'prev')}${card(d.next, 'next')}</nav>`;
+  }
+
+  function renderReader(type, cid, id) {
+    const seq = ++readerSeq;
+    const courseTitle = readerCourseTitle(type, cid);
+    const back = `#/course/${type}/${cid}`;
+    const shell = (inner) => `
+      <div class="page reader">
+        <div class="reader-top">
+          <a class="text-link" href="${back}">${icons.prev}返回目录${courseTitle ? ' · ' + esc(courseTitle) : ''}</a>
+          <span class="reader-keys">← → 翻页</span>
+        </div>
+        ${inner}
+      </div>`;
+    const k = type + ':' + cid + ':' + id;
+    if (!readerCache.has(k)) {
+      $view.innerHTML = shell(`<article class="reader-doc"><div class="skeleton" style="height:12px;width:30%"></div><div class="skeleton" style="height:34px;width:80%;margin:18px 0"></div>${Array.from({ length: 8 }).map((_, i) => `<div class="skeleton" style="height:14px;margin:16px 0;width:${96 - (i % 3) * 12}%"></div>`).join('')}</article>`);
+    }
+    fetchArticle(type, cid, id).then((d) => {
+      if (seq !== readerSeq || S.page !== 'read') return;
+      const meta = [d.author ? esc(d.author) : '', d.ctime ? fmtDay(d.ctime) : ''].filter(Boolean).join('<span class="sep"></span>');
+      let notice = '';
+      if (d.video) notice += '<div class="reader-note">本讲为视频课时, 这里仅显示文字内容; 视频请下载后观看。</div>';
+      if (d.trial) notice += `<div class="reader-note">${d.html ? '你尚未拥有该课程, 以下为试读内容。' : '该文章需要购买课程后阅读。'}</div>`;
+      $view.innerHTML = shell(`
+        <article class="reader-doc">
+          ${courseTitle ? `<div class="kicker">${esc(courseTitle)}</div>` : ''}
+          <h1>${esc(d.title)}</h1>
+          ${meta ? `<div class="reader-meta">${meta}</div>` : ''}
+          ${d.audio ? `<audio class="reader-audio" controls preload="none" src="${esc(d.audio)}"></audio>` : ''}
+          ${notice}
+          ${d.html ? `<div class="prose reader-prose">${d.html}</div>` : ''}
+        </article>
+        ${readerNavHtml(type, cid, d)}`);
+      document.title = d.title + ' · 极客时间下载器';
+      // warm up the next article
+      if (d.next) fetchArticle(type, cid, d.next.id).catch(() => {});
+    }).catch((e) => {
+      if (seq !== readerSeq || S.page !== 'read') return;
+      $view.innerHTML = shell(`<div class="error-box" style="margin-top:24px">加载文章失败: ${esc(e.message)}</div>`);
+    });
+  }
+
+  function readerFlip(dir) {
+    const a = document.querySelector(`.reader-nav .rn.${dir}[href]`);
+    if (a) location.hash = a.getAttribute('href');
+  }
+
   // ---------- polling ----------
   let lastFinished = -1;
   function applyTasks(tasks) {
@@ -2169,6 +2247,10 @@
   document.addEventListener('keydown', (e) => {
     const t = e.target;
     if (e.key === 'Escape' && S.batch && !S.batch.running) { closeDrawer(); return; }
+    if (S.page === 'read' && !e.altKey && !e.ctrlKey && !e.metaKey && !/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '')) {
+      if (e.key === 'ArrowLeft') { readerFlip('prev'); return; }
+      if (e.key === 'ArrowRight') { readerFlip('next'); return; }
+    }
     if (e.key === 'Enter' && t.classList && t.classList.contains('book')) t.click();
     if (e.key === 'Enter' && t.dataset && t.dataset.jump) {
       const n = Number(t.value);
