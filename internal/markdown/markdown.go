@@ -39,8 +39,8 @@ func (ms *markdownString) ReplaceAll(o, n string) {
 	ms.s = strings.ReplaceAll(ms.s, o, n)
 }
 
-// Download article as markdown
-func Download(ctx context.Context, html, title, dir string, aid int) error {
+// Download article as markdown, comments (may be nil) are appended at the end.
+func Download(ctx context.Context, html, title, dir string, aid int, comments []geektime.Comment) error {
 	logger.Infof("Begin download article markdown, articleID: %d, title: %s", aid, title)
 
 	select {
@@ -85,7 +85,7 @@ func Download(ctx context.Context, html, title, dir string, aid int) error {
 		return err
 	}
 	// step3: write md file
-	_, err = f.WriteString("# " + title + "\n" + ss.s)
+	_, err = f.WriteString("# " + title + "\n" + ss.s + renderComments(comments))
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package course
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -170,7 +171,7 @@ func (d *CourseDownloader) DownloadUniversityArticle(course geektime.Course, pro
 		return false, nil
 	}
 	progress.Stage(d.ctx, "生成 Markdown")
-	return false, markdown.Download(d.ctx, detail.Data.ArticleContent, article.Title, columnDir, article.AID)
+	return false, markdown.Download(d.ctx, detail.Data.ArticleContent, article.Title, columnDir, article.AID, nil)
 }
 
 func increaseDownloadedTextArticleCount(total int, downloaded *int) {
@@ -260,12 +261,17 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 	}
 
 	if needDownloadMD {
+		comments, err := d.articleComments(article.AID)
+		if err != nil {
+			return err
+		}
 		progress.Stage(d.ctx, "生成 Markdown")
 		if err := markdown.Download(d.ctx,
 			articleInfo.Data.ArticleContent,
 			article.Title,
 			columnDir,
 			article.AID,
+			comments,
 		); err != nil {
 			return err
 		}
@@ -278,6 +284,25 @@ func (d *CourseDownloader) downloadTextArticle(article geektime.Article, columnD
 		}
 	}
 	return nil
+}
+
+// articleComments fetches comments for markdown according to cfg.DownloadComments.
+// Failures other than rate limit / auth are logged and ignored so the article
+// itself is still saved.
+func (d *CourseDownloader) articleComments(aid int) ([]geektime.Comment, error) {
+	if d.cfg.DownloadComments == pdf.DownloadCommentsNone {
+		return nil, nil
+	}
+	progress.Stage(d.ctx, "获取评论")
+	comments, err := d.geektimeClient.ArticleComments(d.ctx, aid, d.cfg.DownloadComments == pdf.DownloadCommentsAll)
+	if err != nil {
+		if errors.Is(err, geektime.ErrGeekTimeRateLimit) || errors.Is(err, geektime.ErrAuthFailed) || errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		logger.Warnf("Failed to fetch article comments, articleID: %d, err: %v", aid, err)
+		return nil, nil
+	}
+	return comments, nil
 }
 
 func (d *CourseDownloader) skipDownloadVideoArticle(article geektime.Article, columnDir string, overwrite bool) bool {
