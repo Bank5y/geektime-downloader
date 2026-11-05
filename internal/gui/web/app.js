@@ -1754,6 +1754,7 @@
           <button class="btn btn-ghost btn-sm" data-action="dl-retry-failed">${icons.retry}重试失败</button>
           <button class="btn btn-ghost btn-sm btn-danger" data-action="dl-cancel-all">${icons.stop}全部取消</button>
           <span class="spacer"></span>
+          <button class="btn btn-ghost btn-sm" data-action="dl-sync" title="按下载目录中实际存在的文件, 更新各课程的「已下载」记录">${icons.refresh}同步本地记录</button>
           <button class="btn btn-ghost btn-sm" data-action="dl-clear">${icons.trash}清除已完成</button>
         </div>
         <div id="dl-list"></div>
@@ -1989,6 +1990,29 @@
       html += b('task-open', icons.folder, '打开所在目录');
       html += b('task-remove', icons.trash, '移除任务', 'danger');
       acts.innerHTML = html;
+    }
+  }
+
+  // syncRecords updates download records from the files in the download folder
+  async function syncRecords(btn) {
+    const label = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `${icons.refresh}同步中…`;
+    try {
+      const r = await api('POST', '/api/records/sync');
+      S.marks = r.marks || {};
+      const x = r.result || {};
+      let msg = x.added || x.removed
+        ? `已同步 ${x.courses} 门课程: 新增 ${x.added} 篇, 移除 ${x.removed} 篇`
+        : `下载记录与本地文件一致 (${x.courses} 门课程)`;
+      if (x.unresolved && x.unresolved.length) msg += `; ${x.unresolved.length} 门课程无法识别: ${x.unresolved.slice(0, 3).join('、')}${x.unresolved.length > 3 ? ' 等' : ''}`;
+      if (x.aborted) msg += `; 已中止: ${x.aborted}`;
+      toast(msg, x.aborted ? 'error' : 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = label;
     }
   }
 
@@ -2350,6 +2374,7 @@
         if (S.tasks.some(isActive) && confirm('确定取消所有进行中和等待中的任务吗?')) taskAction('cancelAll');
         break;
       case 'dl-clear': taskAction('clearFinished'); break;
+      case 'dl-sync': syncRecords(el); break;
       case 'task-cancel': taskAction('cancel', [Number(id)]); break;
       case 'task-retry': taskAction('retry', [Number(id)]); break;
       case 'task-remove': taskAction('remove', [Number(id)]); break;

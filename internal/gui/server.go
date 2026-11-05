@@ -165,6 +165,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/marks", s.handleMarks)
 	mux.HandleFunc("POST /api/unlock", s.handleUnlock)
 	mux.HandleFunc("POST /api/marks", s.handleSetMark)
+	mux.HandleFunc("POST /api/records/sync", s.handleSyncRecords)
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("POST /api/tasks", s.handleCreateTasks)
 	mux.HandleFunc("POST /api/tasks/action", s.handleTaskAction)

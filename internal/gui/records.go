@@ -221,6 +221,102 @@ func (r *recordStore) articles(courseID int) ([]int, bool) {
 	return ids, marked
 }
 
+// recordCourse is a course that has a record
+type recordCourse struct {
+	ID    int
+	Title string
+}
+
+// courses lists all courses that have a record
+func (r *recordStore) courses() []recordCourse {
+	var out []recordCourse
+	if r.db == nil {
+		return out
+	}
+	rows, err := r.db.Query(`SELECT id, title FROM courses ORDER BY id`)
+	if err != nil {
+		logger.Warnf("Failed to read download records: %v", err)
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var c recordCourse
+		if err := rows.Scan(&c.ID, &c.Title); err == nil {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// syncArticles makes the downloaded articles of a course exactly ids, keeping
+// the finish time of articles already recorded and the manual mark. total < 0
+// keeps the stored total. A course without records is only created when ids
+// is not empty.
+func (r *recordStore) syncArticles(courseID int, title string, total int, ids []int) (added, removed int) {
+	r.withTx(func(tx *sql.Tx) error {
+		added, removed = 0, 0
+		var exists bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?)`, courseID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists && len(ids) == 0 {
+			return nil
+		}
+		if err := upsertCourse(tx, courseID, title); err != nil {
+			return err
+		}
+		if total >= 0 {
+			if _, err := tx.Exec(`UPDATE courses SET total = ? WHERE id = ?`, total, courseID); err != nil {
+				return err
+			}
+		}
+
+		keep := make(map[int]bool, len(ids))
+		for _, id := range ids {
+			keep[id] = true
+		}
+		rows, err := tx.Query(`SELECT article_id FROM downloaded_articles WHERE course_id = ?`, courseID)
+		if err != nil {
+			return err
+		}
+		have := make(map[int]bool)
+		for rows.Next() {
+			var id int
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			have[id] = true
+		}
+		_ = rows.Close()
+
+		now := time.Now().Unix()
+		for id := range have {
+			if keep[id] {
+				continue
+			}
+			if _, err := tx.Exec(`DELETE FROM downloaded_articles WHERE course_id = ? AND article_id = ?`, courseID, id); err != nil {
+				return err
+			}
+			removed++
+		}
+		for id := range keep {
+			if have[id] {
+				continue
+			}
+			if _, err := tx.Exec(`INSERT INTO downloaded_articles (course_id, article_id, finished_at) VALUES (?, ?, ?)`, courseID, id, now); err != nil {
+				return err
+			}
+			added++
+		}
+		if added+removed > 0 {
+			_, err = tx.Exec(`UPDATE courses SET updated_at = ? WHERE id = ?`, now, courseID)
+		}
+		return err
+	})
+	return added, removed
+}
+
 // legacyCourseRecord is one course of the old downloads.json
 type legacyCourseRecord struct {
 	Title     string           `json:"title"`
