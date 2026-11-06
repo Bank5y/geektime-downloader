@@ -111,7 +111,8 @@ func findAllImages(md string) (images []string) {
 
 func getDefaultConverter() *md.Converter {
 	if converter == nil {
-		converter = md.NewConverter("", true, nil)
+		// commonmark has no tables, GFM tables are rendered by most markdown viewers
+		converter = md.NewConverter("", true, nil).Use(tablePlugin())
 	}
 	return converter
 }
